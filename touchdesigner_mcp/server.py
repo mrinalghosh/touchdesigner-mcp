@@ -370,6 +370,140 @@ async def get_errors(
     return await _td_call(code, instance=instance)
 
 
+# ─── introspection ───────────────────────────────────────────────────────────
+# Let the model discover TD's Python API at runtime instead of relying on
+# trained knowledge. TD's API drifts between versions; introspection reflects
+# whatever is actually installed.
+
+@mcp.tool()
+async def get_td_info(instance: str | None = None) -> dict:
+    """Describe the TouchDesigner runtime: version, project, Python, platform.
+
+    Call this first when API compatibility matters — the other introspection
+    tools return data specific to this version.
+    """
+    code = (
+        "import sys, platform\n"
+        "_result = {\n"
+        "  'td': {\n"
+        "    'product': getattr(app, 'product', None),\n"
+        "    'version': getattr(app, 'version', None),\n"
+        "    'build': getattr(app, 'build', None),\n"
+        "    'architecture': getattr(app, 'architecture', None),\n"
+        "  },\n"
+        "  'project': {\n"
+        "    'name': getattr(project, 'name', None),\n"
+        "    'folder': getattr(project, 'folder', None),\n"
+        "    'saveVersion': getattr(project, 'saveVersion', None),\n"
+        "    'cookRate': getattr(project, 'cookRate', None),\n"
+        "  },\n"
+        "  'python': {'version': sys.version, 'executable': sys.executable},\n"
+        "  'platform': {'system': platform.system(), 'release': platform.release(), 'machine': platform.machine()},\n"
+        "  'root_children': [c.name for c in op('/').children],\n"
+        "}"
+    )
+    result = await _td_call(code, instance=instance)
+    name, _ = _resolve(instance)
+    return {"instance": name, **(result or {})}
+
+
+@mcp.tool()
+async def get_td_classes(
+    name_contains: str | None = None, instance: str | None = None
+) -> list[str]:
+    """List public classes exposed by the `td` module.
+
+    Use this to discover what op types and helper classes are available before
+    calling `create_operator` or `get_td_class_details`. Optional case-insensitive
+    substring filter on `name_contains` (e.g. 'TOP', 'CHOP', 'noise').
+    """
+    filt = (
+        f"_f = {_lit(name_contains)}\n"
+        f"_match = lambda n: (_f.lower() in n.lower())\n"
+        if name_contains is not None
+        else "_match = lambda n: True\n"
+    )
+    code = (
+        f"{filt}"
+        f"_result = sorted(\n"
+        f"  n for n in dir(td)\n"
+        f"  if not n.startswith('_')\n"
+        f"  and isinstance(getattr(td, n, None), type)\n"
+        f"  and _match(n)\n"
+        f")"
+    )
+    return await _td_call(code, instance=instance)
+
+
+@mcp.tool()
+async def get_td_class_details(
+    class_name: str, instance: str | None = None
+) -> dict:
+    """Describe a TD Python class: docstring, base classes, methods, attributes.
+
+    `class_name` must be a top-level name in the `td` module (e.g. 'TOP',
+    'noiseTOP', 'OP', 'Par'). Use `get_td_classes` to find candidates.
+    Method signatures come from `inspect.signature`; some C-extension methods
+    will fall back to '(...)'.
+    """
+    code = (
+        f"import inspect\n"
+        f"_name = {_lit(class_name)}\n"
+        f"_cls = getattr(td, _name, None)\n"
+        f"if not isinstance(_cls, type):\n"
+        f"  raise ValueError('Not a class on td module: ' + _name)\n"
+        f"def _firstline(s):\n"
+        f"  if not s: return None\n"
+        f"  for _ln in str(s).splitlines():\n"
+        f"    _ln = _ln.strip()\n"
+        f"    if _ln: return _ln\n"
+        f"  return None\n"
+        f"_methods, _attrs = [], []\n"
+        f"for _n in sorted(dir(_cls)):\n"
+        f"  if _n.startswith('_'): continue\n"
+        f"  try: _v = getattr(_cls, _n)\n"
+        f"  except Exception: continue\n"
+        f"  if callable(_v):\n"
+        f"    try: _sig = str(inspect.signature(_v))\n"
+        f"    except (TypeError, ValueError): _sig = '(...)'\n"
+        f"    _methods.append({{'name': _n, 'signature': _sig, 'doc': _firstline(getattr(_v, '__doc__', None))}})\n"
+        f"  else:\n"
+        f"    _attrs.append({{'name': _n, 'type': type(_v).__name__}})\n"
+        f"_result = {{\n"
+        f"  'name': _cls.__name__,\n"
+        f"  'doc': (_cls.__doc__ or '').strip() or None,\n"
+        f"  'bases': [b.__name__ for b in _cls.__bases__],\n"
+        f"  'methods': _methods,\n"
+        f"  'attributes': _attrs,\n"
+        f"}}"
+    )
+    return await _td_call(code, instance=instance)
+
+
+@mcp.tool()
+async def get_module_help(
+    name: str, instance: str | None = None
+) -> str:
+    """Return the `help()` output for a TD Python name.
+
+    `name` can be a bare identifier on the `td` module ('TOP', 'Par') or a
+    dotted path resolvable in TD's namespace ('TOP.cook', 'op').
+    """
+    code = (
+        f"import io, contextlib\n"
+        f"_name = {_lit(name)}\n"
+        f"_obj = getattr(td, _name, None)\n"
+        f"if _obj is None:\n"
+        f"  try: _obj = eval(_name, {{'td': td, 'op': op, 'project': project, 'app': app, 'ui': ui}})\n"
+        f"  except Exception: _obj = _name\n"
+        f"_buf = io.StringIO()\n"
+        f"with contextlib.redirect_stdout(_buf):\n"
+        f"  help(_obj)\n"
+        f"_result = _buf.getvalue()"
+    )
+    return await _td_call(code, instance=instance)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 
