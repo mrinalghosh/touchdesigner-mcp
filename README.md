@@ -31,12 +31,18 @@ This exposes a `touchdesigner-mcp` console script inside `.venv/bin/`.
 ## TouchDesigner-side setup (one-time, per .toe)
 
 1. Open your project in TouchDesigner.
-2. Inside `/project1` (or any persistent COMP) create a **Web Server DAT**. Suggested name: `mcp_webserver`.
-3. On that DAT:
-   - **Port** = `9980`
-   - **Active** = On
-4. The DAT auto-creates a Callbacks Text DAT. Replace its contents with [td_component/webserver_callbacks.py](td_component/webserver_callbacks.py).
-5. Save the .toe.
+2. Drag [td_component/touchdesigner_mcp.tox](td_component/touchdesigner_mcp.tox) into `/project1` (or any persistent COMP). The component ships a pre-wired Web Server DAT on port `9980` with the callbacks already attached.
+3. Save the .toe.
+
+<details>
+<summary>Manual setup (if you'd rather not use the .tox)</summary>
+
+1. Inside `/project1` create a **Web Server DAT** (suggested name: `mcp_webserver`).
+2. Set **Port** = `9980`, **Active** = On.
+3. Replace the auto-created Callbacks DAT contents with [td_component/webserver_callbacks.py](td_component/webserver_callbacks.py).
+4. Save the .toe.
+
+</details>
 
 Verify from a terminal:
 
