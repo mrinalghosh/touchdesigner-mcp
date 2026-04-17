@@ -85,23 +85,47 @@ def _resolve(instance: str | None) -> tuple[str, str]:
 
 
 async def _td_call(code: str, mode: str = "exec", instance: str | None = None) -> Any:
-    """POST Python to the selected TD instance; raise on structured failure."""
+    """POST Python to the selected TD instance; raise on structured failure.
+
+    Error classification surfaces the distinction between "can't reach TD at
+    all" (process down, wrong port, DAT inactive), "TD accepted the request
+    but the main thread didn't respond in time" (busy cooking, blocking
+    script), and "TD ran the code and it raised" — because the fix is
+    different in each case.
+    """
     name, url = _resolve(instance)
-    async with httpx.AsyncClient(timeout=TD_TIMEOUT) as client:
-        r = await client.post(url, json={"code": code, "mode": mode})
+    try:
+        async with httpx.AsyncClient(timeout=TD_TIMEOUT) as client:
+            r = await client.post(url, json={"code": code, "mode": mode})
+    except httpx.ConnectError as e:
+        raise RuntimeError(
+            f"[{name}] cannot reach TouchDesigner at {url}: {e}. "
+            f"Check that TD is open, the Web Server DAT exists and is Active, "
+            f"and that its Port matches (default 9980)."
+        ) from None
+    except httpx.ReadTimeout as e:
+        raise RuntimeError(
+            f"[{name}] TouchDesigner did not respond within {TD_TIMEOUT}s at {url}: {e}. "
+            f"TD's main thread may be busy cooking or blocked by a long script. "
+            f"Raise TD_TIMEOUT or simplify the call."
+        ) from None
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"[{name}] HTTP error talking to {url}: {e}") from None
+
     try:
         data = r.json()
     except ValueError:
-        r.raise_for_status()
         raise RuntimeError(
-            f"Non-JSON response from TD instance {name!r}: {r.text[:200]}"
-        )
+            f"[{name}] non-JSON response from {url} (HTTP {r.status_code}). "
+            f"The Web Server DAT callback may be missing or out of date — "
+            f"re-paste td_component/webserver_callbacks.py. "
+            f"Body: {r.text[:200]!r}"
+        ) from None
+
     if not data.get("ok"):
         err = data.get("error") or "TD returned ok=false with no detail"
         tb = data.get("traceback")
-        raise RuntimeError(
-            f"[{name}] {err}" + (f"\n{tb}" if tb else "")
-        )
+        raise RuntimeError(f"[{name}] {err}" + (f"\n{tb}" if tb else ""))
     return data.get("result")
 
 
