@@ -81,11 +81,17 @@ def _run_payload(payload):
         }
 
 
+def _log(tag, msg=""):
+    print("[mcp-webserver] {} {}".format(tag, msg).rstrip())
+
+
 def onHTTPRequest(webServerDAT, request, response):
     method = (request.get("method") or "").upper()
     uri = request.get("uri") or ""
+    _log("HTTP", "{} {}".format(method, uri))
 
     if method != "POST" or not uri.startswith("/mcp"):
+        _log("HTTP 404", "{} {} (expected POST /mcp)".format(method, uri))
         response["statusCode"] = 404
         response["statusReason"] = "Not Found"
         response["data"] = json.dumps({"ok": False, "error": "expected POST /mcp"})
@@ -95,12 +101,23 @@ def onHTTPRequest(webServerDAT, request, response):
     try:
         payload = json.loads(raw) if raw else {}
     except Exception as e:
+        _log("HTTP 400", "bad JSON: {}".format(e))
         response["statusCode"] = 400
         response["statusReason"] = "Bad Request"
         response["data"] = json.dumps({"ok": False, "error": "bad JSON: {}".format(e)})
         return response
 
+    mode = payload.get("mode", "exec")
+    code = payload.get("code", "")
+    snippet = code if len(code) <= 200 else code[:200] + "... [+{} chars]".format(len(code) - 200)
+    _log("RUN", "mode={} code={!r}".format(mode, snippet))
+
     result = _run_payload(payload)
+    if result["ok"]:
+        _log("OK", "result={!r}".format(result.get("result")))
+    else:
+        _log("ERR", result.get("error", ""))
+
     response["statusCode"] = 200 if result["ok"] else 500
     response["statusReason"] = "OK" if result["ok"] else "Internal Server Error"
     response["content-type"] = "application/json"
@@ -109,28 +126,35 @@ def onHTTPRequest(webServerDAT, request, response):
 
 
 def onWebSocketOpen(webServerDAT, client, uri):
+    _log("WS open", "{} uri={}".format(client, uri))
     return
 
 
 def onWebSocketClose(webServerDAT, client):
+    _log("WS close", str(client))
     return
 
 
 def onWebSocketReceiveText(webServerDAT, client, data):
+    _log("WS text", "{} {!r}".format(client, data))
     return
 
 
 def onWebSocketReceiveBinary(webServerDAT, client, data):
+    _log("WS binary", "{} {} bytes".format(client, len(data) if data is not None else 0))
     return
 
 
 def onWebSocketReceivePing(webServerDAT, client, data):
+    _log("WS ping", str(client))
     return
 
 
 def onServerStart(webServerDAT):
+    _log("server START", "listening (DAT={})".format(getattr(webServerDAT, "path", "?")))
     return
 
 
 def onServerStop(webServerDAT):
+    _log("server STOP", "DAT={}".format(getattr(webServerDAT, "path", "?")))
     return
