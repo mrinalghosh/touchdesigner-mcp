@@ -1,0 +1,29 @@
+{
+  "_comment": "Two supported forms. Pick the one that matches your setup, paste its mcpServers block into ~/Library/Application Support/Claude/claude_desktop_config.json (or ~/.claude.json for Claude Code), and restart.",
+
+  "_single_instance_form": {
+    "mcpServers": {
+      "touchdesigner": {
+        "command": "/Users/ghosh/Desktop/Code/claude/touchdesigner-mcp/.venv/bin/touchdesigner-mcp",
+        "env": {
+          "TD_HOST": "127.0.0.1",
+          "TD_PORT": "9980"
+        }
+      }
+    }
+  },
+
+  "_multi_instance_form": {
+    "mcpServers": {
+      "touchdesigner": {
+        "command": "/Users/ghosh/Desktop/Code/claude/touchdesigner-mcp/.venv/bin/touchdesigner-mcp",
+        "env": {
+          "TD_INSTANCES": "main=127.0.0.1:9980,fx=127.0.0.1:9981,stage=192.168.1.40:9980",
+          "TD_DEFAULT_INSTANCE": "main"
+        }
+      }
+    }
+  },
+
+  "_claude_code_cli_equivalent": "Instead of editing JSON, you can run:  claude mcp add touchdesigner /Users/ghosh/Desktop/Code/claude/touchdesigner-mcp/.venv/bin/touchdesigner-mcp --env TD_INSTANCES=main=127.0.0.1:9980,fx=127.0.0.1:9981 --env TD_DEFAULT_INSTANCE=main"
+}

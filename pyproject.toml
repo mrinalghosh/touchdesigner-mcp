@@ -1,0 +1,19 @@
+[project]
+name = "touchdesigner-mcp"
+version = "0.1.0"
+description = "MCP server bridging Claude to a running TouchDesigner instance via its Web Server DAT"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+touchdesigner-mcp = "touchdesigner_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["touchdesigner_mcp*"]
