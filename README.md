@@ -147,6 +147,7 @@ Every tool accepts an optional `instance` argument to target a specific TD proce
 - `get_parameter(path, param)`
 - `list_parameters(path)`
 - `pulse_parameter(path, param)`
+- `bind_parameter_expression(path, param, expression)` — switch a parameter to Expression mode with verification (reports any eval exception or new op error)
 
 **Wiring**
 

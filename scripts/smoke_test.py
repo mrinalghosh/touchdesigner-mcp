@@ -57,6 +57,35 @@ def main() -> int:
             ),
             "exec",
         ),
+        # bind_parameter_expression: verifies the happy path (expr evaluates to
+        # the expected value, op_errors stays empty) AND the failure path (a
+        # syntax-error expression surfaces either via the direct eval exception
+        # or via new entries in op.errors() — TD does one or the other depending
+        # on version, so we accept either).
+        (
+            "bind_parameter_expression happy + sad",
+            (
+                "_t = op('/project1').create(td.constantCHOP, 'mcp_smoke_expr')\n"
+                "try:\n"
+                "  _p = _t.par.value0\n"
+                "  _before = set((_t.errors(recurse=False) or '').splitlines())\n"
+                "  _p.expr = '0.25 + 0.25'\n"
+                "  _p.mode = td.ParMode.EXPRESSION\n"
+                "  _good = _p.eval()\n"
+                "  assert abs(_good - 0.5) < 1e-6, 'expected 0.5, got ' + repr(_good)\n"
+                "  _p.expr = 'this is not python'\n"
+                "  _p.mode = td.ParMode.EXPRESSION\n"
+                "  _raised = None\n"
+                "  try: _p.eval()\n"
+                "  except Exception as _e: _raised = type(_e).__name__\n"
+                "  _new = [ln for ln in (_t.errors(recurse=False) or '').splitlines() if ln not in _before]\n"
+                "  assert _raised or _new, 'bad expression produced neither exception nor op error'\n"
+                "  _result = {'good': _good, 'bad_raised': _raised, 'bad_op_errors': len(_new)}\n"
+                "finally:\n"
+                "  _t.destroy()"
+            ),
+            "exec",
+        ),
     ]
     failed = 0
     for label, code, mode in checks:

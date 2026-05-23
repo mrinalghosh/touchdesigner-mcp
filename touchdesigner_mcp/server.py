@@ -303,6 +303,47 @@ async def list_parameters(path: str, instance: str | None = None) -> list[dict]:
 
 
 @mcp.tool()
+async def bind_parameter_expression(
+    path: str,
+    param: str,
+    expression: str,
+    instance: str | None = None,
+) -> dict:
+    """Set a parameter to evaluate a Python expression at cook time.
+
+    Switches the parameter to Expression mode, writes the expression string,
+    forces a single evaluation, and reports back the value plus any error
+    TD raised — both the direct eval exception and any new entries in the
+    owning op's error list.
+
+    Use this instead of writing expressions through `exec_python`: that path
+    silently no-ops on syntax errors and you only notice when nothing moves.
+
+    Example:
+        bind_parameter_expression('/project1/transform1', 'tx',
+                                  "op('null1')['tx']")
+    """
+    code = (
+        f"_path, _name, _src = {_lit(path)}, {_lit(param)}, {_lit(expression)}\n"
+        f"_o = op(_path)\n"
+        f"if _o is None: raise ValueError('No op at ' + _path)\n"
+        f"_p = getattr(_o.par, _name, None)\n"
+        f"if _p is None: raise AttributeError(_path + ' has no parameter ' + _name)\n"
+        f"_before = set((_o.errors(recurse=False) or '').splitlines())\n"
+        f"_p.expr = _src\n"
+        f"_p.mode = td.ParMode.EXPRESSION\n"
+        f"_err = None\n"
+        f"_val = None\n"
+        f"try: _val = _p.eval()\n"
+        f"except Exception as _e: _err = type(_e).__name__ + ': ' + str(_e)\n"
+        f"_new = [ln for ln in (_o.errors(recurse=False) or '').splitlines() if ln not in _before]\n"
+        f"_result = {{'path': _path, 'param': _name, 'expression': _src, "
+        f"'mode': str(_p.mode), 'value': _val, 'error': _err, 'op_errors': _new}}"
+    )
+    return await _td_call(code, instance=instance)
+
+
+@mcp.tool()
 async def pulse_parameter(
     path: str, param: str, instance: str | None = None
 ) -> str:
