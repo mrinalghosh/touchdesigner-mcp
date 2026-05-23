@@ -16,7 +16,21 @@ The MCP server is a thin stdio bridge. All TD mutation happens on TouchDesigner'
 - Python 3.10+
 - [`uv`](https://docs.astral.sh/uv/) or plain `pip`
 
-## Install
+## Install via .mcpb (recommended)
+
+The `.mcpb` bundle is a single-file install for Claude Desktop. It vendors the Python deps and ships the TD-side `.tox` alongside, so both halves come from one file.
+
+1. Build the bundle from the repo root:
+   ```bash
+   bash scripts/build_mcpb.sh
+   # → built dist/touchdesigner-mcp.mcpb
+   ```
+2. Double-click [dist/touchdesigner-mcp.mcpb](dist/touchdesigner-mcp.mcpb). Claude Desktop opens a config form — defaults are fine for local TD (`TD_HOST=127.0.0.1`, `TD_PORT=9980`, `TD_PATH=/mcp`). Leave the multi-instance fields blank unless you're targeting more than one TD process. Click Install.
+3. Continue with the TouchDesigner-side setup below, then skip the "MCP client configuration" section (the bundle wires that for you).
+
+Requires `python3` on PATH (default on most macOS/Linux installs; install from python.org if missing).
+
+## Install from source
 
 ```bash
 git clone https://github.com/mrinalghosh/touchdesigner-mcp
