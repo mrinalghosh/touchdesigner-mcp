@@ -144,6 +144,43 @@ def main() -> int:
             ),
             "exec",
         ),
+        # feedback_loop_top + render_pipeline: build each into a throwaway
+        # baseCOMP, assert the key wiring (Feedback.top → Composite, Render
+        # par.camera/lights/geometry set), then destroy. Skip audio_in
+        # template — depends on the user having an audio device.
+        (
+            "templates: feedback_loop_top + render_pipeline",
+            (
+                "_root = op('/project1')\n"
+                "_box = _root.create(td.baseCOMP, 'mcp_smoke_tmpl2')\n"
+                "try:\n"
+                "  # feedback_loop_top\n"
+                "  _src = _box.create(td.noiseTOP, 'fb_src')\n"
+                "  _fb = _box.create(td.feedbackTOP, 'fb_feedback')\n"
+                "  _comp = _box.create(td.compositeTOP, 'fb_composite')\n"
+                "  _src.outputConnectors[0].connect(_comp.inputConnectors[0])\n"
+                "  _fb.outputConnectors[0].connect(_comp.inputConnectors[1])\n"
+                "  _fb.par.top = _comp.name\n"
+                "  assert _comp.inputConnectors[0].connections, 'src not wired'\n"
+                "  assert _comp.inputConnectors[1].connections, 'feedback not wired'\n"
+                "  assert _fb.par.top.eval() is _comp, 'feedback.top not pointing at composite'\n"
+                "  # render_pipeline\n"
+                "  _cam = _box.create(td.cameraCOMP, 'rp_camera')\n"
+                "  _light = _box.create(td.lightCOMP, 'rp_light')\n"
+                "  _geo = _box.create(td.geometryCOMP, 'rp_geo')\n"
+                "  _render = _box.create(td.renderTOP, 'rp_render')\n"
+                "  _render.par.camera = _cam.path\n"
+                "  _render.par.lights = _light.path\n"
+                "  _render.par.geometry = _geo.path\n"
+                "  assert _render.par.camera.eval() == _cam.path, 'camera not set'\n"
+                "  assert _render.par.geometry.eval() == _geo.path, 'geometry not set'\n"
+                "  _errs = _box.errors(recurse=True) or ''\n"
+                "  _result = {'children': len(_box.children), 'errors': _errs[:200]}\n"
+                "finally:\n"
+                "  _box.destroy()"
+            ),
+            "exec",
+        ),
     ]
     failed = 0
     for label, code, mode in checks:

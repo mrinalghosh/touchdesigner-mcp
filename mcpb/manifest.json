@@ -1,0 +1,85 @@
+{
+  "manifest_version": "0.3",
+  "name": "touchdesigner-mcp",
+  "display_name": "TouchDesigner",
+  "version": "0.1.0",
+  "description": "Drive a running TouchDesigner instance from Claude: create operators, wire them, set parameters, run Python.",
+  "long_description": "Bridges Claude to TouchDesigner via a Web Server DAT inside your .toe. Every tool call turns into a main-thread exec/eval in TD. Requires the mcp_webserver Web Server DAT (port 9980 by default) set up inside your project — see the project README for the TD-side component.",
+  "author": {
+    "name": "Mrinal Ghosh"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mrinalghosh/touchdesigner-mcp"
+  },
+  "keywords": ["touchdesigner", "td", "mcp", "creative-coding", "visuals"],
+  "server": {
+    "type": "python",
+    "entry_point": "server/lib/touchdesigner_mcp/server.py",
+    "mcp_config": {
+      "command": "python3",
+      "args": ["${__dirname}/server/lib/touchdesigner_mcp/server.py"],
+      "env": {
+        "PYTHONPATH": "${__dirname}/server/lib",
+        "TD_HOST": "${user_config.td_host}",
+        "TD_PORT": "${user_config.td_port}",
+        "TD_PATH": "${user_config.td_path}",
+        "TD_INSTANCES": "${user_config.td_instances}",
+        "TD_DEFAULT_INSTANCE": "${user_config.td_default_instance}",
+        "TD_TIMEOUT": "${user_config.td_timeout}"
+      }
+    }
+  },
+  "user_config": {
+    "td_host": {
+      "type": "string",
+      "title": "TouchDesigner host",
+      "description": "Host the Web Server DAT is bound to. Leave as 127.0.0.1 for local TD.",
+      "default": "127.0.0.1",
+      "required": false
+    },
+    "td_port": {
+      "type": "string",
+      "title": "TouchDesigner port",
+      "description": "Port of the Web Server DAT inside TouchDesigner.",
+      "default": "9980",
+      "required": false
+    },
+    "td_path": {
+      "type": "string",
+      "title": "HTTP path",
+      "description": "HTTP path the Web Server DAT answers on.",
+      "default": "/mcp",
+      "required": false
+    },
+    "td_instances": {
+      "type": "string",
+      "title": "Multi-instance map (optional)",
+      "description": "Comma-separated name=host:port[/path] entries to target several TD processes at once, e.g. main=127.0.0.1:9980,fx=127.0.0.1:9981. Overrides the single-instance host/port fields when set.",
+      "default": "",
+      "required": false
+    },
+    "td_default_instance": {
+      "type": "string",
+      "title": "Default instance name",
+      "description": "Which entry from the multi-instance map unqualified tool calls target. Ignored if the map is empty.",
+      "default": "",
+      "required": false
+    },
+    "td_timeout": {
+      "type": "string",
+      "title": "HTTP timeout (seconds)",
+      "description": "How long to wait for TD to respond before giving up.",
+      "default": "10.0",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

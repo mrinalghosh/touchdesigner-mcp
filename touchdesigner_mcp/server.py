@@ -645,6 +645,90 @@ def _tmpl_glsl_top_vec4_uniform(parent_path: str, prefix: str, opts: dict) -> st
     )
 
 
+def _tmpl_audio_in_with_analyze(parent_path: str, prefix: str, opts: dict) -> str:
+    """Audio Device In → Null, plus Audio Spectrum → Null. Reference the Nulls."""
+    return (
+        f"_parent_path = {_lit(parent_path)}\n"
+        f"_prefix = {_lit(prefix)}\n"
+        "_parent = op(_parent_path)\n"
+        "if _parent is None: raise ValueError('No parent COMP at ' + _parent_path)\n"
+        "_audio = _parent.create(td.audiodeviceinCHOP, _prefix + '_audio_src')\n"
+        "_audio_null = _parent.create(td.nullCHOP, _prefix + '_audio_null')\n"
+        "_audio.outputConnectors[0].connect(_audio_null.inputConnectors[0])\n"
+        "_spec = _parent.create(td.audiospectrumCHOP, _prefix + '_spectrum')\n"
+        "_audio_null.outputConnectors[0].connect(_spec.inputConnectors[0])\n"
+        "_spec_null = _parent.create(td.nullCHOP, _prefix + '_spectrum_null')\n"
+        "_spec.outputConnectors[0].connect(_spec_null.inputConnectors[0])\n"
+        "_audio.nodeX, _audio.nodeY = 0, 0\n"
+        "_audio_null.nodeX, _audio_null.nodeY = 200, 0\n"
+        "_spec.nodeX, _spec.nodeY = 400, 0\n"
+        "_spec_null.nodeX, _spec_null.nodeY = 600, 0\n"
+        "_result = {'audio_in': _audio.path, 'audio_null': _audio_null.path, "
+        "'spectrum': _spec.path, 'spectrum_null': _spec_null.path, "
+        "'reference_time_via': _audio_null.path, "
+        "'reference_freq_via': _spec_null.path, "
+        "'created': [_audio.path, _audio_null.path, _spec.path, _spec_null.path]}"
+    )
+
+
+def _tmpl_feedback_loop_top(parent_path: str, prefix: str, opts: dict) -> str:
+    """Source TOP → Composite TOP[0]; Feedback TOP → Composite TOP[1]; Feedback.top → Composite.
+
+    Canonical trailing-frames pattern. The Feedback TOP samples the Composite's
+    output from the previous frame, so each new source frame composites over a
+    decayed history of itself.
+    """
+    source_type = str(opts.get("source_type", "noiseTOP"))
+    return (
+        f"_parent_path = {_lit(parent_path)}\n"
+        f"_prefix = {_lit(prefix)}\n"
+        f"_stype = {_lit(source_type)}\n"
+        "_parent = op(_parent_path)\n"
+        "if _parent is None: raise ValueError('No parent COMP at ' + _parent_path)\n"
+        "_cls = getattr(td, _stype, None)\n"
+        "if not isinstance(_cls, type): raise ValueError('Unknown TOP type: ' + _stype)\n"
+        "_src = _parent.create(_cls, _prefix + '_src')\n"
+        "_fb = _parent.create(td.feedbackTOP, _prefix + '_feedback')\n"
+        "_comp = _parent.create(td.compositeTOP, _prefix + '_composite')\n"
+        "_src.outputConnectors[0].connect(_comp.inputConnectors[0])\n"
+        "_fb.outputConnectors[0].connect(_comp.inputConnectors[1])\n"
+        # Feedback TOP samples the Composite's previous-frame output.
+        "_fb.par.top = _comp.name\n"
+        "_src.nodeX, _src.nodeY = 0, 100\n"
+        "_fb.nodeX, _fb.nodeY = 0, -100\n"
+        "_comp.nodeX, _comp.nodeY = 250, 0\n"
+        "_result = {'source': _src.path, 'feedback': _fb.path, "
+        "'composite': _comp.path, 'output': _comp.path, "
+        "'created': [_src.path, _fb.path, _comp.path]}"
+    )
+
+
+def _tmpl_render_pipeline(parent_path: str, prefix: str, opts: dict) -> str:
+    """Camera + Light + Geo (empty) + Render TOP. Minimal 3D scene."""
+    return (
+        f"_parent_path = {_lit(parent_path)}\n"
+        f"_prefix = {_lit(prefix)}\n"
+        "_parent = op(_parent_path)\n"
+        "if _parent is None: raise ValueError('No parent COMP at ' + _parent_path)\n"
+        "_cam = _parent.create(td.cameraCOMP, _prefix + '_camera')\n"
+        "_light = _parent.create(td.lightCOMP, _prefix + '_light')\n"
+        "_geo = _parent.create(td.geometryCOMP, _prefix + '_geo')\n"
+        "_render = _parent.create(td.renderTOP, _prefix + '_render')\n"
+        # Render TOP references its scene ops by path string.
+        "_render.par.camera = _cam.path\n"
+        "_render.par.lights = _light.path\n"
+        "_render.par.geometry = _geo.path\n"
+        "_cam.nodeX, _cam.nodeY = 0, 200\n"
+        "_light.nodeX, _light.nodeY = 0, 0\n"
+        "_geo.nodeX, _geo.nodeY = 0, -200\n"
+        "_render.nodeX, _render.nodeY = 300, 0\n"
+        "_result = {'camera': _cam.path, 'light': _light.path, "
+        "'geo': _geo.path, 'render': _render.path, "
+        "'note': 'Add SOPs inside the Geo COMP to make it visible.', "
+        "'created': [_cam.path, _light.path, _geo.path, _render.path]}"
+    )
+
+
 TEMPLATES: dict[str, dict] = {
     "chop_source_with_null": {
         "description": (
@@ -668,6 +752,38 @@ TEMPLATES: dict[str, dict] = {
             "uniform_name": "Shader uniform identifier (must be a valid GLSL name). Default 'uColor'.",
         },
         "build": _tmpl_glsl_top_vec4_uniform,
+    },
+    "audio_in_with_analyze": {
+        "description": (
+            "Audio Device In CHOP → Null, then Audio Spectrum CHOP → Null. "
+            "Both Nulls give stable, inspectable endpoints — reference them "
+            "instead of the source/spectrum directly. The audio Null is "
+            "time-domain; the spectrum Null is frequency-domain."
+        ),
+        "options": {},
+        "build": _tmpl_audio_in_with_analyze,
+    },
+    "feedback_loop_top": {
+        "description": (
+            "Canonical trailing-frames pattern: Source TOP → Composite[0], "
+            "Feedback TOP → Composite[1], Feedback.top points back at the "
+            "Composite. Each frame composites the new source over a decayed "
+            "history of itself. Use the Composite as the visible output."
+        ),
+        "options": {
+            "source_type": "TD class name of the source TOP. Default 'noiseTOP'.",
+        },
+        "build": _tmpl_feedback_loop_top,
+    },
+    "render_pipeline": {
+        "description": (
+            "Minimal 3D scene: Camera COMP + Light COMP + (empty) Geometry "
+            "COMP + Render TOP wired together. The Geo COMP starts empty — "
+            "drop SOPs inside it (or wire a SOP via its `Render` flag) to "
+            "make something visible."
+        ),
+        "options": {},
+        "build": _tmpl_render_pipeline,
     },
 }
 

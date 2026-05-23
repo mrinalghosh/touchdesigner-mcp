@@ -163,7 +163,7 @@ Every tool accepts an optional `instance` argument to target a specific TD proce
 **Templates** (multi-op recipes that encode known gotchas)
 
 - `list_templates` — discover available templates and their options
-- `create_from_template(template, parent_path, name_prefix, options=None)` — instantiate one. Ships with `chop_source_with_null` and `glsl_top_vec4_uniform`.
+- `create_from_template(template, parent_path, name_prefix, options=None)` — instantiate one. Ships with `chop_source_with_null`, `glsl_top_vec4_uniform`, `audio_in_with_analyze`, `feedback_loop_top`, `render_pipeline`.
 
 **Introspection** (lets the model discover the live `td` API rather than guessing)
 
