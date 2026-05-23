@@ -4,6 +4,7 @@ Reverse-chronological log of notable changes. One or two lines per entry.
 
 ## Unreleased
 
+- **Fix screenshot_op and ParMode against real TD.** TD's bundled Python has no Pillow → replaced PIL with a pure-numpy PNG encoder (vectorized row-filter). TD's `ParMode` enum isn't on the `td` module → grab the class off an existing parameter via `type(par.mode).EXPRESSION`. Smoke test also now surfaces the HTTP 500 body so TD-side tracebacks are visible.
 - **create_from_template + list_templates tools** — multi-op recipes that encode CLAUDE.md gotchas as one-call primitives. Ships with `chop_source_with_null` (source CHOP + Null) and `glsl_top_vec4_uniform` (GLSL TOP + Constant CHOP + Text DAT wired via the Vectors page).
 - **bind_parameter_expression tool** — set a parameter to Expression mode with verification. Returns the evaluated value plus any direct exception *and* any new op-level error TD logged, so silently-broken expressions can't slip through.
 - **screenshot_op tool** — capture a TOP's current frame as an inline MCP `Image` (default 512px JPEG, `full_resolution=True` for native PNG). Encodes in-memory on TD's main thread; nothing hits disk. Handles mono/RG/RGB/RGBA TOPs and old + new Pillow Resampling APIs.

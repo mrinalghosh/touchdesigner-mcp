@@ -22,8 +22,16 @@ def call(code: str, mode: str = "exec") -> dict:
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        # TD returns ok=false with traceback in the body on 500; surface it.
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(body)
+        except ValueError:
+            return {"ok": False, "error": f"HTTP {e.code}", "body": body[:500]}
 
 
 def main() -> int:
@@ -38,20 +46,24 @@ def main() -> int:
         (
             "screenshot_op encode path",
             (
-                "import io, base64, numpy as np\n"
-                "from PIL import Image as _PIL\n"
+                "import base64, struct, zlib\n"
+                "import numpy as np\n"
                 "_tmp = op('/project1').create(td.constantTOP, 'mcp_smoke_shot')\n"
                 "try:\n"
                 "  _tmp.par.resolutionw, _tmp.par.resolutionh = 64, 64\n"
                 "  _tmp.par.colorr, _tmp.par.colorg, _tmp.par.colorb = 0.2, 0.5, 0.8\n"
                 "  _tmp.cook(force=True)\n"
-                "  _arr = _tmp.numpyArray(delayed=False)\n"
-                "  _u8 = (np.clip(np.flipud(_arr), 0, 1) * 255 + 0.5).astype('uint8')[:, :, :3]\n"
-                "  _buf = io.BytesIO()\n"
-                "  _PIL.fromarray(_u8, 'RGB').save(_buf, 'JPEG', quality=75)\n"
-                "  _b = _buf.getvalue()\n"
-                "  assert _b[:3] == b'\\xff\\xd8\\xff', 'not a JPEG'\n"
-                "  _result = {'bytes': len(_b), 'b64_head': base64.b64encode(_b)[:16].decode()}\n"
+                "  _arr = np.flipud(_tmp.numpyArray(delayed=False))\n"
+                "  _u8 = (np.clip(_arr, 0, 1) * 255 + 0.5).astype('uint8')[:, :, :3]\n"
+                "  _h, _w = _u8.shape[:2]\n"
+                "  _rows = _u8.reshape(_h, -1)\n"
+                "  _raw = np.concatenate([np.zeros((_h, 1), 'uint8'), _rows], axis=1).tobytes()\n"
+                "  def _chunk(t, d):\n"
+                "    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)\n"
+                "  _ihdr = struct.pack('>IIBBBBB', _w, _h, 8, 2, 0, 0, 0)\n"
+                "  _png = b'\\x89PNG\\r\\n\\x1a\\n' + _chunk(b'IHDR', _ihdr) + _chunk(b'IDAT', zlib.compress(_raw)) + _chunk(b'IEND', b'')\n"
+                "  assert _png[:8] == b'\\x89PNG\\r\\n\\x1a\\n', 'PNG magic missing'\n"
+                "  _result = {'bytes': len(_png), 'b64_head': base64.b64encode(_png)[:16].decode()}\n"
                 "finally:\n"
                 "  _tmp.destroy()"
             ),
@@ -70,11 +82,11 @@ def main() -> int:
                 "  _p = _t.par.value0\n"
                 "  _before = set((_t.errors(recurse=False) or '').splitlines())\n"
                 "  _p.expr = '0.25 + 0.25'\n"
-                "  _p.mode = td.ParMode.EXPRESSION\n"
+                "  _p.mode = type(_p.mode).EXPRESSION\n"
                 "  _good = _p.eval()\n"
                 "  assert abs(_good - 0.5) < 1e-6, 'expected 0.5, got ' + repr(_good)\n"
                 "  _p.expr = 'this is not python'\n"
-                "  _p.mode = td.ParMode.EXPRESSION\n"
+                "  _p.mode = type(_p.mode).EXPRESSION\n"
                 "  _raised = None\n"
                 "  try: _p.eval()\n"
                 "  except Exception as _e: _raised = type(_e).__name__\n"
@@ -118,7 +130,7 @@ def main() -> int:
                 "  for _c in ['x','y','z','w']:\n"
                 "    _p = getattr(_glsl.par, 'vec0value' + _c)\n"
                 "    _p.expr = \"op('\" + _chop.name + \"')['\" + _c + \"']\"\n"
-                "    _p.mode = td.ParMode.EXPRESSION\n"
+                "    _p.mode = type(_p.mode).EXPRESSION\n"
                 "  _glsl.cook(force=True)\n"
                 "  _errs = _box.errors(recurse=True) or ''\n"
                 "  assert 'uniform' not in _errs.lower() or 'not assigned' not in _errs.lower(), \\\n"
@@ -138,11 +150,19 @@ def main() -> int:
         try:
             resp = call(code, mode)
             ok = resp.get("ok")
-            print(f"[{'OK ' if ok else 'ERR'}] {label}: {resp}")
-            if not ok:
+            if ok:
+                print(f"[OK ] {label}: {resp.get('result')!r}")
+            else:
+                err = resp.get("error", "no error field")
+                tb = resp.get("traceback", "")
+                print(f"[ERR] {label}: {err}")
+                if tb:
+                    # Indent the traceback so it's visually grouped under the label.
+                    for ln in tb.rstrip().splitlines():
+                        print(f"       {ln}")
                 failed += 1
         except Exception as e:
-            print(f"[ERR] {label}: {e}")
+            print(f"[ERR] {label}: {type(e).__name__}: {e}")
             failed += 1
     return 0 if failed == 0 else 1
 

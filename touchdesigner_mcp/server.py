@@ -331,7 +331,9 @@ async def bind_parameter_expression(
         f"if _p is None: raise AttributeError(_path + ' has no parameter ' + _name)\n"
         f"_before = set((_o.errors(recurse=False) or '').splitlines())\n"
         f"_p.expr = _src\n"
-        f"_p.mode = td.ParMode.EXPRESSION\n"
+        # ParMode isn't on the td module — grab the enum class off an actual
+        # par instance so we work across TD builds.
+        f"_p.mode = type(_p.mode).EXPRESSION\n"
         f"_err = None\n"
         f"_val = None\n"
         f"try: _val = _p.eval()\n"
@@ -632,7 +634,7 @@ def _tmpl_glsl_top_vec4_uniform(parent_path: str, prefix: str, opts: dict) -> st
         "for _comp in ['x', 'y', 'z', 'w']:\n"
         "  _p = getattr(_glsl.par, 'vec0value' + _comp)\n"
         "  _p.expr = \"op('\" + _chop.name + \"')['\" + _comp + \"']\"\n"
-        "  _p.mode = td.ParMode.EXPRESSION\n"
+        "  _p.mode = type(_p.mode).EXPRESSION\n"
         # Layout for legibility.
         "_chop.nodeX, _chop.nodeY = 0, 200\n"
         "_dat.nodeX,  _dat.nodeY  = 0, 50\n"
@@ -719,61 +721,58 @@ async def create_from_template(
 @mcp.tool()
 async def screenshot_op(
     path: str,
-    full_resolution: bool = False,
     max_edge: int = 512,
     instance: str | None = None,
 ) -> Image:
-    """Grab the current frame of a TOP and return it as an inline image.
+    """Grab the current frame of a TOP and return it as an inline PNG.
 
-    Nothing is written to disk — the PNG/JPEG bytes are encoded on TD's main
-    thread and returned in the MCP response, so the image lives only as long
-    as the conversation does.
+    Nothing is written to disk — the bytes are encoded on TD's main thread
+    with a tiny pure-numpy PNG writer (TD's bundled Python has numpy but
+    NOT Pillow) and returned in the MCP response.
 
     Args:
-        path:            full path to a TOP (e.g. '/project1/render1').
-        full_resolution: True → native size, PNG (lossless, large).
-                         False (default) → downscaled JPEG, quality 75.
-        max_edge:        long-edge cap in pixels when full_resolution=False.
+        path:     full path to a TOP (e.g. '/project1/render1').
+        max_edge: long-edge cap in pixels for nearest-neighbor decimation.
+                  Pass 0 for native resolution (may be large).
     """
-    cap = max(1, int(max_edge))
+    cap = max(0, int(max_edge))
     code = (
-        f"import io, base64, numpy as np\n"
-        f"from PIL import Image as _PIL\n"
         f"_path = {_lit(path)}\n"
-        f"_o = op(_path)\n"
-        f"if _o is None: raise ValueError('No op at ' + _path)\n"
-        f"if not hasattr(_o, 'numpyArray'):\n"
-        f"  raise TypeError(_path + ' is not a TOP (no numpyArray)')\n"
-        f"_arr = _o.numpyArray(delayed=False)\n"
-        f"if _arr is None: raise RuntimeError('TOP returned no pixels (not cooked yet?)')\n"
-        f"if _arr.ndim == 2: _arr = _arr[:, :, None]\n"
-        f"_arr = np.flipud(_arr)\n"
-        f"_u8 = (np.clip(_arr, 0.0, 1.0) * 255.0 + 0.5).astype('uint8')\n"
-        f"_ch = _u8.shape[2]\n"
-        f"if _ch == 1:\n"
-        f"  _pil = _PIL.fromarray(_u8[:, :, 0], 'L')\n"
-        f"elif _ch == 2:\n"
-        f"  _rgb = np.zeros((_u8.shape[0], _u8.shape[1], 3), dtype='uint8')\n"
-        f"  _rgb[:, :, 0:2] = _u8\n"
-        f"  _pil = _PIL.fromarray(_rgb, 'RGB')\n"
-        f"elif _ch == 3:\n"
-        f"  _pil = _PIL.fromarray(_u8, 'RGB')\n"
-        f"else:\n"
-        f"  _pil = _PIL.fromarray(_u8[:, :, :4], 'RGBA')\n"
-        f"_full = {bool(full_resolution)}\n"
-        f"_cap  = {cap}\n"
-        f"if not _full and max(_pil.size) > _cap:\n"
-        f"  _resample = getattr(getattr(_PIL, 'Resampling', _PIL), 'LANCZOS')\n"
-        f"  _pil.thumbnail((_cap, _cap), _resample)\n"
-        f"_buf = io.BytesIO()\n"
-        f"if _full:\n"
-        f"  _pil.save(_buf, 'PNG', optimize=True)\n"
-        f"  _fmt = 'png'\n"
-        f"else:\n"
-        f"  _pil.convert('RGB').save(_buf, 'JPEG', quality=75, optimize=True)\n"
-        f"  _fmt = 'jpeg'\n"
-        f"_result = {{'b64': base64.b64encode(_buf.getvalue()).decode('ascii'), "
-        f"'format': _fmt, 'width': _pil.width, 'height': _pil.height}}"
+        f"_cap = {cap}\n"
+        "import base64, struct, zlib\n"
+        "import numpy as np\n"
+        "_o = op(_path)\n"
+        "if _o is None: raise ValueError('No op at ' + _path)\n"
+        "if not hasattr(_o, 'numpyArray'):\n"
+        "  raise TypeError(_path + ' is not a TOP (no numpyArray)')\n"
+        "_arr = _o.numpyArray(delayed=False)\n"
+        "if _arr is None: raise RuntimeError('TOP returned no pixels (not cooked yet?)')\n"
+        "if _arr.ndim == 2: _arr = _arr[:, :, None]\n"
+        "_arr = np.flipud(_arr)\n"
+        "_h, _w = _arr.shape[:2]\n"
+        "if _cap > 0 and max(_h, _w) > _cap:\n"
+        "  _stride = max(1, int(round(max(_h, _w) / float(_cap))))\n"
+        "  _arr = _arr[::_stride, ::_stride]\n"
+        "  _h, _w = _arr.shape[:2]\n"
+        "_u8 = (np.clip(_arr, 0.0, 1.0) * 255.0 + 0.5).astype('uint8')\n"
+        "_ch = _u8.shape[2]\n"
+        # PNG color type: 0=gray, 2=rgb, 4=gray+alpha, 6=rgba.
+        "if _ch == 1: _ct = 0; _data = _u8\n"
+        "elif _ch == 2: _ct = 4; _data = _u8\n"
+        "elif _ch == 3: _ct = 2; _data = _u8\n"
+        "else: _ct = 6; _data = np.ascontiguousarray(_u8[:, :, :4])\n"
+        # Prefix each row with a filter byte (0 = None) — vectorized to avoid
+        # per-row Python overhead on large images.
+        "_rows = _data.reshape(_h, -1)\n"
+        "_filtered = np.concatenate([np.zeros((_h, 1), dtype='uint8'), _rows], axis=1)\n"
+        "_raw = _filtered.tobytes()\n"
+        "def _chunk(t, d):\n"
+        "  return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)\n"
+        "_ihdr = struct.pack('>IIBBBBB', _w, _h, 8, _ct, 0, 0, 0)\n"
+        "_idat = zlib.compress(_raw, 6)\n"
+        "_png = b'\\x89PNG\\r\\n\\x1a\\n' + _chunk(b'IHDR', _ihdr) + _chunk(b'IDAT', _idat) + _chunk(b'IEND', b'')\n"
+        "_result = {'b64': base64.b64encode(_png).decode('ascii'), "
+        "'format': 'png', 'width': _w, 'height': _h}"
     )
     payload = await _td_call(code, instance=instance)
     return Image(data=base64.b64decode(payload["b64"]), format=payload["format"])
