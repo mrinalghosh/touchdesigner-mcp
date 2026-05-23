@@ -160,6 +160,11 @@ Every tool accepts an optional `instance` argument to target a specific TD proce
 - `find_operators(root_path='/', op_type=None, name_pattern=None, depth=4)`
 - `get_errors(path='/', recurse=True)`
 
+**Templates** (multi-op recipes that encode known gotchas)
+
+- `list_templates` — discover available templates and their options
+- `create_from_template(template, parent_path, name_prefix, options=None)` — instantiate one. Ships with `chop_source_with_null` and `glsl_top_vec4_uniform`.
+
 **Introspection** (lets the model discover the live `td` API rather than guessing)
 
 - `get_td_info` — version, project, Python, platform

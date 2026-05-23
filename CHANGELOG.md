@@ -4,6 +4,7 @@ Reverse-chronological log of notable changes. One or two lines per entry.
 
 ## Unreleased
 
+- **create_from_template + list_templates tools** — multi-op recipes that encode CLAUDE.md gotchas as one-call primitives. Ships with `chop_source_with_null` (source CHOP + Null) and `glsl_top_vec4_uniform` (GLSL TOP + Constant CHOP + Text DAT wired via the Vectors page).
 - **bind_parameter_expression tool** — set a parameter to Expression mode with verification. Returns the evaluated value plus any direct exception *and* any new op-level error TD logged, so silently-broken expressions can't slip through.
 - **screenshot_op tool** — capture a TOP's current frame as an inline MCP `Image` (default 512px JPEG, `full_resolution=True` for native PNG). Encodes in-memory on TD's main thread; nothing hits disk. Handles mono/RG/RGB/RGBA TOPs and old + new Pillow Resampling APIs.
 - **Smoke test for the screenshot encode path** — exercises `numpyArray → PIL → JPEG` against a throwaway `constantTOP` to catch missing Pillow/numpy in TD's Python.

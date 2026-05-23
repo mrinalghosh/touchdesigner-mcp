@@ -86,6 +86,52 @@ def main() -> int:
             ),
             "exec",
         ),
+        # create_from_template: build a Base COMP, inline the same op-creation
+        # sequence the server-side templates produce, verify the GLSL TOP
+        # actually shows the uniform color (proves Vectors-page binding works),
+        # then destroy the Base COMP so the user's project stays clean even if
+        # this test bails midway. Inlined rather than imported because smoke_test
+        # talks to TD's webserver directly and can't import the MCP server.
+        (
+            "templates: chop+null and glsl_top vec4 uniform end-to-end",
+            (
+                "_root = op('/project1')\n"
+                "_box = _root.create(td.baseCOMP, 'mcp_smoke_tmpl')\n"
+                "try:\n"
+                "  # chop_source_with_null\n"
+                "  _stype = 'mouseinCHOP'\n"
+                "  _cls = getattr(td, _stype)\n"
+                "  _src = _box.create(_cls, 'chop_src')\n"
+                "  _null = _box.create(td.nullCHOP, 'chop_null')\n"
+                "  _src.outputConnectors[0].connect(_null.inputConnectors[0])\n"
+                "  assert _null.inputConnectors[0].connections, 'null not wired to src'\n"
+                "  # glsl_top_vec4_uniform — minimal end-to-end\n"
+                "  _chop = _box.create(td.constantCHOP, 'glsl_uniform')\n"
+                "  for _i, _ch in enumerate(['x','y','z','w']):\n"
+                "    getattr(_chop.par, 'name' + str(_i)).val = _ch\n"
+                "    getattr(_chop.par, 'value' + str(_i)).val = 1.0 if _ch=='w' else 0.5\n"
+                "  _dat = _box.create(td.textDAT, 'glsl_shader')\n"
+                "  _dat.text = 'out vec4 fragColor;\\nuniform vec4 uColor;\\nvoid main(){fragColor=uColor;}\\n'\n"
+                "  _glsl = _box.create(td.glslTOP, 'glsl_top')\n"
+                "  _glsl.par.pixeldat = _dat.name\n"
+                "  _glsl.par.vec0name = 'uColor'\n"
+                "  for _c in ['x','y','z','w']:\n"
+                "    _p = getattr(_glsl.par, 'vec0value' + _c)\n"
+                "    _p.expr = \"op('\" + _chop.name + \"')['\" + _c + \"']\"\n"
+                "    _p.mode = td.ParMode.EXPRESSION\n"
+                "  _glsl.cook(force=True)\n"
+                "  _errs = _box.errors(recurse=True) or ''\n"
+                "  assert 'uniform' not in _errs.lower() or 'not assigned' not in _errs.lower(), \\\n"
+                "    'shader uniform not assigned — vectors-page binding broke: ' + _errs[:300]\n"
+                "  _arr = _glsl.numpyArray(delayed=False)\n"
+                "  assert _arr is not None and abs(float(_arr[0,0,0]) - 0.5) < 0.05, \\\n"
+                "    'glsl output not driven by uniform: ' + repr(None if _arr is None else _arr[0,0,:])\n"
+                "  _result = {'children': len(_box.children), 'errors': _errs[:200]}\n"
+                "finally:\n"
+                "  _box.destroy()"
+            ),
+            "exec",
+        ),
     ]
     failed = 0
     for label, code, mode in checks:

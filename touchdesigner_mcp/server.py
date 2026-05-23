@@ -572,6 +572,148 @@ async def get_module_help(
     return await _td_call(code, instance=instance)
 
 
+# ─── templates ───────────────────────────────────────────────────────────────
+# Multi-op recipes that encode CLAUDE.md gotchas as one-call primitives, so
+# the agent can't fumble the wiring. Each builder returns a TD code block that
+# creates the ops, wires them, lays them out, and assigns `_result`.
+
+def _tmpl_chop_source_with_null(parent_path: str, prefix: str, opts: dict) -> str:
+    """Source CHOP → Null CHOP. Reference the Null, never the source."""
+    source_type = str(opts.get("source_type", "mouseinCHOP"))
+    return (
+        f"_parent_path = {_lit(parent_path)}\n"
+        f"_prefix = {_lit(prefix)}\n"
+        f"_stype = {_lit(source_type)}\n"
+        "_parent = op(_parent_path)\n"
+        "if _parent is None: raise ValueError('No parent COMP at ' + _parent_path)\n"
+        "_cls = getattr(td, _stype, None)\n"
+        "if not isinstance(_cls, type): raise ValueError('Unknown CHOP type: ' + _stype)\n"
+        "_src = _parent.create(_cls, _prefix + '_src')\n"
+        "_null = _parent.create(td.nullCHOP, _prefix + '_null')\n"
+        "_src.outputConnectors[0].connect(_null.inputConnectors[0])\n"
+        "_null.nodeX = _src.nodeX + 200\n"
+        "_null.nodeY = _src.nodeY\n"
+        "_result = {'source': _src.path, 'null': _null.path, "
+        "'reference_via': _null.path, 'created': [_src.path, _null.path]}"
+    )
+
+
+def _tmpl_glsl_top_vec4_uniform(parent_path: str, prefix: str, opts: dict) -> str:
+    """GLSL TOP + Constant CHOP + Text DAT, wired via the Vectors page."""
+    uniform_name = str(opts.get("uniform_name", "uColor"))
+    if not uniform_name.isidentifier():
+        raise ValueError(f"uniform_name {uniform_name!r} is not a valid GLSL identifier")
+    shader = (
+        "out vec4 fragColor;\n"
+        f"uniform vec4 {uniform_name};\n"
+        "void main() {\n"
+        f"    fragColor = {uniform_name};\n"
+        "}\n"
+    )
+    return (
+        f"_parent_path = {_lit(parent_path)}\n"
+        f"_prefix = {_lit(prefix)}\n"
+        f"_uname = {_lit(uniform_name)}\n"
+        f"_shader_src = {_lit(shader)}\n"
+        "_parent = op(_parent_path)\n"
+        "if _parent is None: raise ValueError('No parent COMP at ' + _parent_path)\n"
+        # Constant CHOP — four named channels, default to opaque mid-grey.
+        "_chop = _parent.create(td.constantCHOP, _prefix + '_uniform')\n"
+        "for _i, _ch in enumerate(['x', 'y', 'z', 'w']):\n"
+        "  getattr(_chop.par, 'name' + str(_i)).val = _ch\n"
+        "  getattr(_chop.par, 'value' + str(_i)).val = 1.0 if _ch == 'w' else 0.5\n"
+        # Text DAT with a starter shader that uses the uniform.
+        "_dat = _parent.create(td.textDAT, _prefix + '_shader')\n"
+        "_dat.text = _shader_src\n"
+        # GLSL TOP wired to both.
+        "_glsl = _parent.create(td.glslTOP, _prefix + '_glsl')\n"
+        "_glsl.par.pixeldat = _dat.name\n"
+        "_glsl.par.vec0name = _uname\n"
+        "for _comp in ['x', 'y', 'z', 'w']:\n"
+        "  _p = getattr(_glsl.par, 'vec0value' + _comp)\n"
+        "  _p.expr = \"op('\" + _chop.name + \"')['\" + _comp + \"']\"\n"
+        "  _p.mode = td.ParMode.EXPRESSION\n"
+        # Layout for legibility.
+        "_chop.nodeX, _chop.nodeY = 0, 200\n"
+        "_dat.nodeX,  _dat.nodeY  = 0, 50\n"
+        "_glsl.nodeX, _glsl.nodeY = 300, 125\n"
+        "_result = {'chop': _chop.path, 'shader_dat': _dat.path, "
+        "'glsl_top': _glsl.path, 'uniform_name': _uname, "
+        "'created': [_chop.path, _dat.path, _glsl.path]}"
+    )
+
+
+TEMPLATES: dict[str, dict] = {
+    "chop_source_with_null": {
+        "description": (
+            "Source CHOP followed by a Null CHOP. Reference the Null for "
+            "stable channel names — source CHOPs (mouseIn, keyboardIn, audioIn, "
+            "etc.) rename/prefix channels in non-obvious ways."
+        ),
+        "options": {
+            "source_type": "TD class name of the source CHOP. Default 'mouseinCHOP'.",
+        },
+        "build": _tmpl_chop_source_with_null,
+    },
+    "glsl_top_vec4_uniform": {
+        "description": (
+            "GLSL TOP with a runtime-updatable vec4 uniform bound to a "
+            "Constant CHOP via the Vectors page (NOT the Constants page, which "
+            "is compile-time only and fails silently). Ships a starter "
+            "fragment shader that outputs the uniform as a flat color."
+        ),
+        "options": {
+            "uniform_name": "Shader uniform identifier (must be a valid GLSL name). Default 'uColor'.",
+        },
+        "build": _tmpl_glsl_top_vec4_uniform,
+    },
+}
+
+
+@mcp.tool()
+async def list_templates() -> list[dict]:
+    """List multi-op templates that can be instantiated with create_from_template.
+
+    Each template bundles several ops wired correctly per the project's known
+    gotchas, so the agent doesn't have to reconstruct them from scratch.
+    """
+    return [
+        {"name": n, "description": t["description"], "options": t["options"]}
+        for n, t in TEMPLATES.items()
+    ]
+
+
+@mcp.tool()
+async def create_from_template(
+    template: str,
+    parent_path: str,
+    name_prefix: str,
+    options: dict | None = None,
+    instance: str | None = None,
+) -> dict:
+    """Instantiate a named template under `parent_path`.
+
+    Args:
+        template:    Template name from `list_templates`.
+        parent_path: COMP to create the ops in (e.g. '/project1').
+        name_prefix: Prefix applied to every op created (e.g. 'fx1' →
+                     'fx1_src', 'fx1_null'). Must be unique within the parent.
+        options:     Template-specific options. See `list_templates`.
+    Returns a dict with `created` (list of paths) plus per-template fields.
+    """
+    if template not in TEMPLATES:
+        raise ValueError(
+            f"Unknown template {template!r}. Available: {sorted(TEMPLATES)}"
+        )
+    if not name_prefix or not name_prefix.replace("_", "").isalnum():
+        raise ValueError(
+            f"name_prefix {name_prefix!r} must be alphanumeric (underscores ok) "
+            "and non-empty — it's used as a TD op name component."
+        )
+    code = TEMPLATES[template]["build"](parent_path, name_prefix, options or {})
+    return await _td_call(code, instance=instance)
+
+
 # ─── visual capture ──────────────────────────────────────────────────────────
 
 @mcp.tool()
