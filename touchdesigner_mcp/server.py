@@ -24,8 +24,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import base64
+
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.types import Image
 
 
 def _parse_instances() -> dict[str, tuple[str, int, str]]:
@@ -526,6 +529,71 @@ async def get_module_help(
         f"_result = _buf.getvalue()"
     )
     return await _td_call(code, instance=instance)
+
+
+# ─── visual capture ──────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def screenshot_op(
+    path: str,
+    full_resolution: bool = False,
+    max_edge: int = 512,
+    instance: str | None = None,
+) -> Image:
+    """Grab the current frame of a TOP and return it as an inline image.
+
+    Nothing is written to disk — the PNG/JPEG bytes are encoded on TD's main
+    thread and returned in the MCP response, so the image lives only as long
+    as the conversation does.
+
+    Args:
+        path:            full path to a TOP (e.g. '/project1/render1').
+        full_resolution: True → native size, PNG (lossless, large).
+                         False (default) → downscaled JPEG, quality 75.
+        max_edge:        long-edge cap in pixels when full_resolution=False.
+    """
+    cap = max(1, int(max_edge))
+    code = (
+        f"import io, base64, numpy as np\n"
+        f"from PIL import Image as _PIL\n"
+        f"_path = {_lit(path)}\n"
+        f"_o = op(_path)\n"
+        f"if _o is None: raise ValueError('No op at ' + _path)\n"
+        f"if not hasattr(_o, 'numpyArray'):\n"
+        f"  raise TypeError(_path + ' is not a TOP (no numpyArray)')\n"
+        f"_arr = _o.numpyArray(delayed=False)\n"
+        f"if _arr is None: raise RuntimeError('TOP returned no pixels (not cooked yet?)')\n"
+        f"if _arr.ndim == 2: _arr = _arr[:, :, None]\n"
+        f"_arr = np.flipud(_arr)\n"
+        f"_u8 = (np.clip(_arr, 0.0, 1.0) * 255.0 + 0.5).astype('uint8')\n"
+        f"_ch = _u8.shape[2]\n"
+        f"if _ch == 1:\n"
+        f"  _pil = _PIL.fromarray(_u8[:, :, 0], 'L')\n"
+        f"elif _ch == 2:\n"
+        f"  _rgb = np.zeros((_u8.shape[0], _u8.shape[1], 3), dtype='uint8')\n"
+        f"  _rgb[:, :, 0:2] = _u8\n"
+        f"  _pil = _PIL.fromarray(_rgb, 'RGB')\n"
+        f"elif _ch == 3:\n"
+        f"  _pil = _PIL.fromarray(_u8, 'RGB')\n"
+        f"else:\n"
+        f"  _pil = _PIL.fromarray(_u8[:, :, :4], 'RGBA')\n"
+        f"_full = {bool(full_resolution)}\n"
+        f"_cap  = {cap}\n"
+        f"if not _full and max(_pil.size) > _cap:\n"
+        f"  _resample = getattr(getattr(_PIL, 'Resampling', _PIL), 'LANCZOS')\n"
+        f"  _pil.thumbnail((_cap, _cap), _resample)\n"
+        f"_buf = io.BytesIO()\n"
+        f"if _full:\n"
+        f"  _pil.save(_buf, 'PNG', optimize=True)\n"
+        f"  _fmt = 'png'\n"
+        f"else:\n"
+        f"  _pil.convert('RGB').save(_buf, 'JPEG', quality=75, optimize=True)\n"
+        f"  _fmt = 'jpeg'\n"
+        f"_result = {{'b64': base64.b64encode(_buf.getvalue()).decode('ascii'), "
+        f"'format': _fmt, 'width': _pil.width, 'height': _pil.height}}"
+    )
+    payload = await _td_call(code, instance=instance)
+    return Image(data=base64.b64decode(payload["b64"]), format=payload["format"])
 
 
 def main() -> None:
