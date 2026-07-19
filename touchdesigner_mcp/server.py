@@ -73,7 +73,40 @@ if DEFAULT_INSTANCE not in INSTANCES:
     )
 TD_TIMEOUT = float(os.environ.get("TD_TIMEOUT", "10.0"))
 
-mcp = FastMCP("touchdesigner")
+
+# Sent to every client at connection time (MCP `instructions`), so this travels
+# with the server to any project/directory — unlike a repo CLAUDE.md or a local
+# skill. Kept deliberately tight: it lives in context for the whole session, so
+# bloating it would be self-defeating.
+_INSTRUCTIONS = """\
+Drive a running TouchDesigner instance from its Web Server DAT. Every tool call
+is a full model turn plus ~one TD frame of latency, and large results stay in
+context and slow every later turn — so be economical.
+
+EFFICIENCY
+- Batch. To build or modify more than ~2 ops, use build_network (declarative
+  ops + connections + params) or a single exec_python that assigns _result —
+  not a stream of create_operator / connect_operators / set_parameter calls.
+  create_from_template covers common wired recipes.
+- Introspect sparingly. get_module_help is ~10k tokens — avoid unless stuck.
+  Prefer list_parameters on the actual op; filter get_td_classes with
+  name_contains. Don't re-introspect the same class/op — TD's API is stable
+  within a session.
+- Verify with get_errors or the `errors` field build_network returns, not
+  screenshot_op, unless you genuinely need to see pixels.
+
+TD GOTCHAS (each fails silently if ignored)
+- Parameter names are the LOWERCASE internal names from list_parameters
+  (e.g. 'brightness1', 'translatex'), NOT the TitleCase tooltip label.
+- After a source CHOP (mouseIn, audioIn, midiIn, oscIn, ...), insert a Null
+  CHOP and reference the Null — sources rename/prefix channels unpredictably.
+- GLSL TOP runtime uniforms belong on the Vectors page (declare a vec4, set
+  vec0name), not the Constants page (compile-time only, assigns nothing).
+- TD's Python has numpy but not Pillow; screenshot_op already encodes PNG —
+  don't reach for PIL.
+"""
+
+mcp = FastMCP("touchdesigner", instructions=_INSTRUCTIONS)
 
 
 def _resolve(instance: str | None) -> tuple[str, str]:
