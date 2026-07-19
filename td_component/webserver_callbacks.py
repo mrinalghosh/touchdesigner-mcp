@@ -29,17 +29,47 @@
 import json
 import traceback
 
+# Serialization caps. The bridge is fast (~one TD frame per call), but a naive
+# `_result = op('/').children` or a dumped DAT table can return megabytes that
+# land straight in the model's context window and slow every later turn. Cap
+# collection *counts* aggressively and string *length* generously (so an
+# intentional large string like get_module_help's 42KB still passes), and
+# always leave an explicit truncation marker so the caller knows it's partial.
+_MAX_DEPTH = 6
+_MAX_ITEMS = 500        # elements per list/dict before truncation
+_MAX_STR = 100_000      # chars per string before truncation
+
+
+def _clip_str(s):
+    if len(s) > _MAX_STR:
+        return s[:_MAX_STR] + "…[+{} chars truncated]".format(len(s) - _MAX_STR)
+    return s
+
 
 def _jsonable(v, _depth=0):
     """Best-effort convert TD objects / arbitrary values to JSON-safe types."""
-    if _depth > 6:
-        return str(v)
-    if v is None or isinstance(v, (str, int, float, bool)):
+    if _depth > _MAX_DEPTH:
+        return _clip_str(str(v))
+    if v is None or isinstance(v, (int, float, bool)):
         return v
+    if isinstance(v, str):
+        return _clip_str(v)
     if isinstance(v, dict):
-        return {str(k): _jsonable(val, _depth + 1) for k, val in v.items()}
+        out = {}
+        for i, (k, val) in enumerate(v.items()):
+            if i >= _MAX_ITEMS:
+                out["__truncated__"] = "dict had {} keys; showing {}".format(
+                    len(v), _MAX_ITEMS
+                )
+                break
+            out[str(k)] = _jsonable(val, _depth + 1)
+        return out
     if isinstance(v, (list, tuple, set, frozenset)):
-        return [_jsonable(x, _depth + 1) for x in v]
+        items = list(v)
+        out = [_jsonable(x, _depth + 1) for x in items[:_MAX_ITEMS]]
+        if len(items) > _MAX_ITEMS:
+            out.append("…[+{} items truncated]".format(len(items) - _MAX_ITEMS))
+        return out
     path = getattr(v, "path", None)
     if isinstance(path, str):
         return {
@@ -47,7 +77,7 @@ def _jsonable(v, _depth=0):
             "type": getattr(v, "OPType", type(v).__name__),
             "name": getattr(v, "name", None),
         }
-    return str(v)
+    return _clip_str(str(v))
 
 
 def _build_namespace():
