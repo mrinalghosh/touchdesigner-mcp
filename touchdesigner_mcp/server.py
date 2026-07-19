@@ -832,6 +832,78 @@ async def create_from_template(
     return await _td_call(code, instance=instance)
 
 
+@mcp.tool()
+async def build_network(
+    parent_path: str,
+    operators: list[dict],
+    connections: list[dict] | None = None,
+    instance: str | None = None,
+) -> dict:
+    """Create, wire, parameterize, and lay out many operators in ONE call.
+
+    Collapses what would otherwise be dozens of create_operator /
+    connect_operators / set_parameter / move_operator round-trips into a single
+    main-thread exec. Every MCP round-trip costs ~one TD frame *plus* a full
+    model turn, so prefer this (or create_from_template) whenever you're
+    building more than two or three ops at once.
+
+    Args:
+        parent_path: COMP to build in, e.g. '/project1'.
+        operators: list of dicts, each:
+            {'name': str,              # unique within the parent
+             'type': str,              # TD class, e.g. 'noiseTOP', 'transformTOP'
+             'params': {name: value},  # optional; LOWERCASE internal names as
+                                        #   returned by list_parameters (e.g.
+                                        #   'brightness1', NOT 'Brightness1')
+             'x': float, 'y': float}    # optional tile position
+        connections: list of dicts, each:
+            {'from': str,   # op name in THIS batch, or a full path
+             'to': str,     # op name in THIS batch, or a full path
+             'out': int,    # source output index (default 0)
+             'in': int}     # target input index (default 0)
+
+    Ops are created first (so connections can reference them by name), then
+    params are set, then wiring. Failures are collected per-item instead of
+    aborting the whole batch. Returns
+    {'created': [paths], 'connected': [...], 'errors': [...]} — always check
+    `errors`.
+    """
+    code = (
+        f"_parent = op({_lit(parent_path)})\n"
+        f"if _parent is None: raise ValueError('No parent COMP at ' + {_lit(parent_path)})\n"
+        f"_ops_spec = {_lit(operators)}\n"
+        f"_conns_spec = {_lit(connections or [])}\n"
+        "_made, _created, _errors = {}, [], []\n"
+        "for _s in _ops_spec:\n"
+        "  try:\n"
+        "    _nm, _ty = _s['name'], _s['type']\n"
+        "    _cls = getattr(td, _ty, None)\n"
+        "    if not isinstance(_cls, type): raise ValueError('unknown op type ' + str(_ty))\n"
+        "    _o = _parent.create(_cls, _nm)\n"
+        "    _made[_nm] = _o; _created.append(_o.path)\n"
+        "    for _pk, _pv in (_s.get('params') or {}).items():\n"
+        "      try: getattr(_o.par, _pk).val = _pv\n"
+        "      except Exception as _pe: _errors.append('param ' + _nm + '.' + str(_pk) + ': ' + str(_pe))\n"
+        "    if 'x' in _s: _o.nodeX = float(_s['x'])\n"
+        "    if 'y' in _s: _o.nodeY = float(_s['y'])\n"
+        "  except Exception as _e:\n"
+        "    _errors.append('create ' + str(_s.get('name')) + ': ' + str(_e))\n"
+        "def _resolve(_r):\n"
+        "  return _made[_r] if _r in _made else op(_r)\n"
+        "_connected = []\n"
+        "for _c in _conns_spec:\n"
+        "  try:\n"
+        "    _src, _dst = _resolve(_c['from']), _resolve(_c['to'])\n"
+        "    if _src is None or _dst is None: raise ValueError('unresolved endpoint')\n"
+        "    _src.outputConnectors[int(_c.get('out', 0))].connect(_dst.inputConnectors[int(_c.get('in', 0))])\n"
+        "    _connected.append(_src.path + ' -> ' + _dst.path)\n"
+        "  except Exception as _e:\n"
+        "    _errors.append('connect ' + str(_c.get('from')) + '->' + str(_c.get('to')) + ': ' + str(_e))\n"
+        "_result = {'created': _created, 'connected': _connected, 'errors': _errors}"
+    )
+    return await _td_call(code, instance=instance)
+
+
 # ─── visual capture ──────────────────────────────────────────────────────────
 
 @mcp.tool()
