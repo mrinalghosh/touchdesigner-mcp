@@ -88,10 +88,13 @@ EFFICIENCY
   ops + connections + params) or a single exec_python that assigns _result —
   not a stream of create_operator / connect_operators / set_parameter calls.
   create_from_template covers common wired recipes.
-- Introspect sparingly. get_module_help is ~10k tokens — avoid unless stuck.
-  Prefer list_parameters on the actual op; filter get_td_classes with
-  name_contains. Don't re-introspect the same class/op — TD's API is stable
-  within a session.
+- Introspect sparingly, cheapest-first. For an op's params use list_parameters
+  on the actual op. For the Python API, climb the ladder: get_module_help with
+  grep='x' to find a member (~hundreds of tok), then member='x' to read one
+  (~150 tok); get_td_class_details for a structured whole-class summary (~3k);
+  bare get_module_help is the ~10k-token full dump — last resort. Filter
+  get_td_classes with name_contains. TD's API is stable within a session —
+  don't re-introspect the same class/op.
 - Verify with get_errors or the `errors` field build_network returns, not
   screenshot_op, unless you genuinely need to see pixels.
 
@@ -585,24 +588,65 @@ async def get_td_class_details(
 
 @mcp.tool()
 async def get_module_help(
-    name: str, instance: str | None = None
-) -> str:
-    """Return the `help()` output for a TD Python name.
+    name: str,
+    member: str | None = None,
+    grep: str | None = None,
+    instance: str | None = None,
+) -> str | dict:
+    """Look up TD Python API docs. Prefer the scalpel modes — the full dump is ~10k tokens.
 
-    `name` can be a bare identifier on the `td` module ('TOP', 'Par') or a
-    dotted path resolvable in TD's namespace ('TOP.cook', 'op').
+    `name` is a bare identifier on the `td` module ('TOP', 'Par') or a dotted
+    path resolvable in TD's namespace ('op', 'project'). Climb cheapest-first:
+
+    - grep='pattern'  — SEARCH: members of `name` whose name or docstring match
+      (case-insensitive). Returns [{name, signature, doc}] rows, ~hundreds of
+      tokens. Use when you don't know the exact member. (grep like the shell.)
+    - member='cook'   — ZOOM: help() for just that one member, ~150 tokens.
+      Use when you know which method/attr you want.
+    - neither         — FULL help() text for the whole object, ~10k tokens for a
+      big class. Last resort. Consider get_td_class_details for a structured,
+      3x-smaller summary of the whole surface instead.
+
+    `grep` wins if both are given.
     """
     code = (
-        f"import io, contextlib\n"
+        f"import io, contextlib, inspect\n"
         f"_name = {_lit(name)}\n"
+        f"_member = {_lit(member)}\n"
+        f"_grep = {_lit(grep)}\n"
         f"_obj = getattr(td, _name, None)\n"
         f"if _obj is None:\n"
         f"  try: _obj = eval(_name, {{'td': td, 'op': op, 'project': project, 'app': app, 'ui': ui}})\n"
         f"  except Exception: _obj = _name\n"
-        f"_buf = io.StringIO()\n"
-        f"with contextlib.redirect_stdout(_buf):\n"
-        f"  help(_obj)\n"
-        f"_result = _buf.getvalue()"
+        f"if _grep is not None:\n"
+        f"  _q = _grep.lower()\n"
+        f"  _rows = []\n"
+        f"  for _n in sorted(dir(_obj)):\n"
+        f"    if _n.startswith('_'): continue\n"
+        f"    try: _v = getattr(_obj, _n)\n"
+        f"    except Exception: continue\n"
+        f"    _doc = getattr(_v, '__doc__', '') or ''\n"
+        f"    if _q in _n.lower() or _q in _doc.lower():\n"
+        f"      if callable(_v):\n"
+        f"        try: _sig = str(inspect.signature(_v))\n"
+        f"        except (TypeError, ValueError): _sig = '(...)'\n"
+        f"      else: _sig = None\n"
+        f"      _first = next((_l.strip() for _l in _doc.splitlines() if _l.strip()), None)\n"
+        f"      _rows.append({{'name': _n, 'signature': _sig, 'doc': _first[:100] if _first else None}})\n"
+        f"  _result = {{'name': _name, 'grep': _grep, 'matches': _rows}}\n"
+        f"elif _member is not None:\n"
+        f"  _target = getattr(_obj, _member, None)\n"
+        f"  if _target is None:\n"
+        f"    raise ValueError('No member ' + repr(_member) + ' on ' + _name)\n"
+        f"  _buf = io.StringIO()\n"
+        f"  with contextlib.redirect_stdout(_buf):\n"
+        f"    help(_target)\n"
+        f"  _result = _buf.getvalue()\n"
+        f"else:\n"
+        f"  _buf = io.StringIO()\n"
+        f"  with contextlib.redirect_stdout(_buf):\n"
+        f"    help(_obj)\n"
+        f"  _result = _buf.getvalue()"
     )
     return await _td_call(code, instance=instance)
 
