@@ -42,33 +42,44 @@ _MAX_STR = 100_000      # chars per string before truncation
 
 def _clip_str(s):
     if len(s) > _MAX_STR:
-        return s[:_MAX_STR] + "…[+{} chars truncated]".format(len(s) - _MAX_STR)
+        # ASCII marker only: a non-ASCII byte here would break any consumer that
+        # treats a truncated string as ASCII/base64 (e.g. base64.b64decode).
+        return s[:_MAX_STR] + "...[+{} chars truncated]".format(len(s) - _MAX_STR)
     return s
 
 
-def _jsonable(v, _depth=0):
-    """Best-effort convert TD objects / arbitrary values to JSON-safe types."""
+def _jsonable(v, _depth=0, _clip=True):
+    """Best-effort convert TD objects / arbitrary values to JSON-safe types.
+
+    With `_clip` True (default), collection counts and string lengths are capped
+    so an accidental megabyte dump can't land in the model's context. A tool that
+    returns an *intentional* large payload — e.g. screenshot_op's base64 PNG,
+    which truncation would corrupt — sets `_no_clip = True` in the exec namespace;
+    _run_payload then calls this with `_clip=False` to pass it through intact.
+    The depth guard always applies (it prevents runaway recursion on cycles).
+    """
     if _depth > _MAX_DEPTH:
-        return _clip_str(str(v))
+        return _clip_str(str(v)) if _clip else str(v)
     if v is None or isinstance(v, (int, float, bool)):
         return v
     if isinstance(v, str):
-        return _clip_str(v)
+        return _clip_str(v) if _clip else v
     if isinstance(v, dict):
         out = {}
         for i, (k, val) in enumerate(v.items()):
-            if i >= _MAX_ITEMS:
+            if _clip and i >= _MAX_ITEMS:
                 out["__truncated__"] = "dict had {} keys; showing {}".format(
                     len(v), _MAX_ITEMS
                 )
                 break
-            out[str(k)] = _jsonable(val, _depth + 1)
+            out[str(k)] = _jsonable(val, _depth + 1, _clip)
         return out
     if isinstance(v, (list, tuple, set, frozenset)):
         items = list(v)
-        out = [_jsonable(x, _depth + 1) for x in items[:_MAX_ITEMS]]
-        if len(items) > _MAX_ITEMS:
-            out.append("…[+{} items truncated]".format(len(items) - _MAX_ITEMS))
+        shown = items[:_MAX_ITEMS] if _clip else items
+        out = [_jsonable(x, _depth + 1, _clip) for x in shown]
+        if _clip and len(items) > _MAX_ITEMS:
+            out.append("...[+{} items truncated]".format(len(items) - _MAX_ITEMS))
         return out
     path = getattr(v, "path", None)
     if isinstance(path, str):
@@ -77,7 +88,7 @@ def _jsonable(v, _depth=0):
             "type": getattr(v, "OPType", type(v).__name__),
             "name": getattr(v, "name", None),
         }
-    return _clip_str(str(v))
+    return _clip_str(str(v)) if _clip else str(v)
 
 
 def _build_namespace():
@@ -89,6 +100,9 @@ def _build_namespace():
         "parent": parent, "root": root, "me": me,
         "project": project, "app": app, "ui": ui,
         "_result": None,
+        # Set to True in exec code to return _result uncapped (see _jsonable).
+        # Only for intentional large payloads like a base64 image.
+        "_no_clip": False,
     }
 
 
@@ -99,10 +113,12 @@ def _run_payload(payload):
     try:
         if mode == "eval":
             value = eval(code, ns)
+            no_clip = False  # eval is a bare expression; no way to signal opt-out
         else:
             exec(code, ns)
             value = ns.get("_result")
-        return {"ok": True, "result": _jsonable(value)}
+            no_clip = bool(ns.get("_no_clip"))
+        return {"ok": True, "result": _jsonable(value, _clip=not no_clip)}
     except Exception as e:
         return {
             "ok": False,

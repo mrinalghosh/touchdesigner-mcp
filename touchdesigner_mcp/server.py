@@ -1037,7 +1037,11 @@ async def screenshot_op(
         "_idat = zlib.compress(_raw, 6)\n"
         "_png = b'\\x89PNG\\r\\n\\x1a\\n' + _chunk(b'IHDR', _ihdr) + _chunk(b'IDAT', _idat) + _chunk(b'IEND', b'')\n"
         "_result = {'b64': base64.b64encode(_png).decode('ascii'), "
-        "'format': 'png', 'width': _w, 'height': _h}"
+        "'format': 'png', 'width': _w, 'height': _h}\n"
+        # The base64 PNG is an intentional large payload — opt out of the bridge
+        # size cap, which would truncate it and corrupt the image (see
+        # webserver_callbacks._jsonable). A 512px screenshot is ~240KB of base64.
+        "_no_clip = True"
     )
     payload = await _td_call(code, instance=instance)
     return Image(data=base64.b64decode(payload["b64"]), format=payload["format"])
