@@ -28,3 +28,11 @@ When wiring CHOP references into expressions, parameters, or other ops, place a 
 - Source CHOPs like `mouseIn`, `keyboardIn`, `audioIn`, `oscIn`, `midiIn` prefix/rename channels in non-obvious ways, which breaks naive references like `op('mouseIn1')['tx']`.
 - The MCP cannot diagnose these failures from the source CHOP alone — the Null gives a stable, inspectable endpoint.
 - After creating the Null, verify channel names (e.g. `list_children` / inspect it) before writing the downstream expression.
+
+## Docked helper ops don't follow programmatic moves
+
+Some ops auto-spawn **docked** companion ops when created. A GLSL TOP spawns `<name>_pixel` (your fragment shader), `<name>_info`, and `<name>_compute` DATs, docked directly beneath it. TD only drags docked ops along when you move the host **in the network editor UI** — setting `nodeX`/`nodeY` from Python moves the host alone and strands the companions at their spawn coordinates, leaving a long dock-tether line reaching back across the network.
+
+- `move_operator` and `build_network` already re-fan a host's docked ops into a clean row beneath it after placing it — prefer them over raw `nodeX`/`nodeY` writes.
+- `tidy_docked(path, recursive=...)` re-gathers stranded companions in a network that's already sprawled — pass a single op or a COMP to sweep.
+- If you set positions yourself inside an `exec_python` batch, fan the docked ops too: for each `d in host.docked`, set `d.nodeX`/`d.nodeY` relative to the host (put the `_pixel` shader directly below). Otherwise you reintroduce the sprawl.
