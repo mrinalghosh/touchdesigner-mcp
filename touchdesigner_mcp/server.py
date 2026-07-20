@@ -21,6 +21,7 @@ Timeout:
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -169,7 +170,28 @@ async def _td_call(code: str, mode: str = "exec", instance: str | None = None) -
 
 
 def _lit(value: Any) -> str:
-    """Render a Python literal for safe embedding in generated TD code."""
+    """Render a Python literal for safe embedding in generated TD code.
+
+    repr() is almost right, but repr(float('inf')) == 'inf' and
+    repr(float('nan')) == 'nan' are bare names — a NameError when the generated
+    code is exec'd inside TD. Rewrite any non-finite float to a float('...')
+    call, recursing through dict/list/tuple so a *nested* non-finite (e.g. a
+    build_network param value) is rewritten too. Everything else — str, int,
+    bool, None, finite float — falls through to repr, whose output is unchanged.
+    """
+    if isinstance(value, bool):
+        return repr(value)  # bool is an int subclass; keep True/False, not 1/0
+    if isinstance(value, float) and not math.isfinite(value):
+        return "float({!r})".format(str(value))  # 'inf' / '-inf' / 'nan'
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            "{}: {}".format(_lit(k), _lit(v)) for k, v in value.items()
+        ) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_lit(x) for x in value) + "]"
+    if isinstance(value, tuple):
+        inner = ", ".join(_lit(x) for x in value)
+        return "(" + inner + ("," if len(value) == 1 else "") + ")"
     return repr(value)
 
 
