@@ -108,6 +108,11 @@ TD GOTCHAS (each fails silently if ignored)
   vec0name), not the Constants page (compile-time only, assigns nothing).
 - TD's Python has numpy but not Pillow; screenshot_op already encodes PNG —
   don't reach for PIL.
+- Docked helper ops (a GLSL TOP's _pixel shader DAT, plus _info / _compute)
+  don't follow raw nodeX/nodeY writes — only UI drags carry them, so a
+  programmatic move strands them across the network. Place hosts with
+  move_operator / build_network (they re-fan docked ops beneath the host), and
+  tidy_docked to repair a network that's already sprawled.
 """
 
 mcp = FastMCP("touchdesigner", instructions=_INSTRUCTIONS)
@@ -264,6 +269,31 @@ async def eval_python(expression: str, instance: str | None = None) -> Any:
 
 # ─── node lifecycle ──────────────────────────────────────────────────────────
 
+# Shared TD-side helper, injected into any generated block that repositions an
+# op. Many ops auto-spawn *docked* companions (a GLSL TOP gets _pixel/_info/
+# _compute DATs; the _pixel one holds your fragment shader). TD only drags
+# docked ops along when you move the host *in the UI* — a programmatic
+# nodeX/nodeY assignment (which is how every tool here places ops) moves the
+# host alone and strands the companions at their spawn coordinates, leaving a
+# long dock-tether line stretching across the network. Re-fanning after each
+# move snaps them back to a clean row beneath the host. The pixel/vertex shader
+# is ranked closest so it sits directly under the TOP.
+_FAN_DOCKED_PY = (
+    "def _fan_docked(_host):\n"
+    "  _dk = [_d for _d in (getattr(_host, 'docked', None) or [])]\n"
+    "  if not _dk: return 0\n"
+    "  _rank = {'pixel': 0, 'vertex': 1, 'compute': 2, 'info': 3}\n"
+    "  _dk.sort(key=lambda _d: (_rank.get(_d.name.rsplit('_', 1)[-1], 99), _d.name))\n"
+    "  _gap = 30\n"
+    "  _x = _host.nodeX\n"
+    "  _y = _host.nodeY - (_host.nodeHeight + _gap)\n"
+    "  for _d in _dk:\n"
+    "    _d.nodeX, _d.nodeY = _x, _y\n"
+    "    _x += _d.nodeWidth + _gap\n"
+    "  return len(_dk)\n"
+)
+
+
 @mcp.tool()
 async def create_operator(
     parent_path: str, op_type: str, name: str, instance: str | None = None
@@ -308,11 +338,55 @@ async def rename_operator(
 async def move_operator(
     path: str, x: float, y: float, instance: str | None = None
 ) -> str:
-    """Move an operator's tile in the network editor."""
+    """Move an operator's tile in the network editor.
+
+    If the op has docked companions (e.g. a GLSL TOP's shader DATs), they are
+    re-fanned directly beneath it so they follow the move instead of being
+    stranded — TD only carries docked ops on UI drags, not programmatic moves.
+    """
     code = (
-        f"_o = op({_lit(path)})\n"
+        _FAN_DOCKED_PY
+        + f"_o = op({_lit(path)})\n"
         f"_o.nodeX = {float(x)}\n_o.nodeY = {float(y)}\n"
+        f"_fan_docked(_o)\n"
         f"_result = _o.path"
+    )
+    return await _td_call(code, instance=instance)
+
+
+@mcp.tool()
+async def tidy_docked(
+    path: str, recursive: bool = False, instance: str | None = None
+) -> dict:
+    """Re-gather stranded docked helper ops into a clean fan beneath their host.
+
+    Many ops auto-spawn *docked* companions — e.g. a GLSL TOP gets a _pixel DAT
+    (your fragment shader) plus _info and _compute DATs. TD only drags these
+    along when you move the host *in the UI*; a programmatic move (which every
+    build tool here uses) strands them at their old coordinates, often far
+    across the network with a long dock-tether line. This snaps every host's
+    companions back into a tidy row directly below it (shader closest). Use it
+    to repair a network that's already sprawled.
+
+    Args:
+        path: a single op to tidy, OR a COMP to sweep for hosts inside it.
+        recursive: when `path` is a COMP, also tidy hosts in nested COMPs.
+    Returns {'tidied': [host paths], 'companions': <ops moved>}.
+    """
+    code = (
+        _FAN_DOCKED_PY
+        + f"_root = op({_lit(path)})\n"
+        f"if _root is None: raise ValueError('No op at ' + {_lit(path)})\n"
+        f"_recursive = {_lit(bool(recursive))}\n"
+        "_cands = [_root]\n"
+        "if hasattr(_root, 'children'):\n"
+        "  _cands += list(_root.findChildren() if _recursive else _root.children)\n"
+        "_tidied, _moved = [], 0\n"
+        "for _h in _cands:\n"
+        "  _n = _fan_docked(_h)\n"
+        "  if _n:\n"
+        "    _tidied.append(_h.path); _moved += _n\n"
+        "_result = {'tidied': _tidied, 'companions': _moved}"
     )
     return await _td_call(code, instance=instance)
 
@@ -712,7 +786,8 @@ def _tmpl_glsl_top_vec4_uniform(parent_path: str, prefix: str, opts: dict) -> st
         "}\n"
     )
     return (
-        f"_parent_path = {_lit(parent_path)}\n"
+        _FAN_DOCKED_PY
+        + f"_parent_path = {_lit(parent_path)}\n"
         f"_prefix = {_lit(prefix)}\n"
         f"_uname = {_lit(uniform_name)}\n"
         f"_shader_src = {_lit(shader)}\n"
@@ -723,21 +798,26 @@ def _tmpl_glsl_top_vec4_uniform(parent_path: str, prefix: str, opts: dict) -> st
         "for _i, _ch in enumerate(['x', 'y', 'z', 'w']):\n"
         "  getattr(_chop.par, 'name' + str(_i)).val = _ch\n"
         "  getattr(_chop.par, 'value' + str(_i)).val = 1.0 if _ch == 'w' else 0.5\n"
-        # Text DAT with a starter shader that uses the uniform.
-        "_dat = _parent.create(td.textDAT, _prefix + '_shader')\n"
-        "_dat.text = _shader_src\n"
-        # GLSL TOP wired to both.
+        # GLSL TOP. Creating it auto-spawns a docked _pixel DAT (plus _info /
+        # _compute); write the starter shader into THAT pixel DAT rather than
+        # making a second Text DAT — a separate one would leave the auto-spawned
+        # pixel DAT orphaned. (Fallback creates one if TD didn't auto-spawn.)
         "_glsl = _parent.create(td.glslTOP, _prefix + '_glsl')\n"
-        "_glsl.par.pixeldat = _dat.name\n"
+        "_dat = _glsl.par.pixeldat.eval()\n"
+        "if _dat is None:\n"
+        "  _dat = _parent.create(td.textDAT, _prefix + '_shader')\n"
+        "  _glsl.par.pixeldat = _dat.name\n"
+        "_dat.text = _shader_src\n"
         "_glsl.par.vec0name = _uname\n"
         "for _comp in ['x', 'y', 'z', 'w']:\n"
         "  _p = getattr(_glsl.par, 'vec0value' + _comp)\n"
         "  _p.expr = \"op('\" + _chop.name + \"')['\" + _comp + \"']\"\n"
         "  _p.mode = type(_p.mode).EXPRESSION\n"
-        # Layout for legibility.
+        # Layout: Constant CHOP above, GLSL TOP to the right, and its docked
+        # shader DATs fanned into a clean row directly beneath the TOP.
         "_chop.nodeX, _chop.nodeY = 0, 200\n"
-        "_dat.nodeX,  _dat.nodeY  = 0, 50\n"
         "_glsl.nodeX, _glsl.nodeY = 300, 125\n"
+        "_fan_docked(_glsl)\n"
         "_result = {'chop': _chop.path, 'shader_dat': _dat.path, "
         "'glsl_top': _glsl.path, 'uniform_name': _uname, "
         "'created': [_chop.path, _dat.path, _glsl.path]}"
@@ -968,7 +1048,8 @@ async def build_network(
     `errors`.
     """
     code = (
-        f"_parent = op({_lit(parent_path)})\n"
+        _FAN_DOCKED_PY
+        + f"_parent = op({_lit(parent_path)})\n"
         f"if _parent is None: raise ValueError('No parent COMP at ' + {_lit(parent_path)})\n"
         f"_ops_spec = {_lit(operators)}\n"
         f"_conns_spec = {_lit(connections or [])}\n"
@@ -985,6 +1066,7 @@ async def build_network(
         "      except Exception as _pe: _errors.append('param ' + _nm + '.' + str(_pk) + ': ' + str(_pe))\n"
         "    if 'x' in _s: _o.nodeX = float(_s['x'])\n"
         "    if 'y' in _s: _o.nodeY = float(_s['y'])\n"
+        "    _fan_docked(_o)\n"
         "  except Exception as _e:\n"
         "    _errors.append('create ' + str(_s.get('name')) + ': ' + str(_e))\n"
         "def _resolve(_r):\n"

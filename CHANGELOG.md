@@ -4,6 +4,14 @@ Reverse-chronological log of notable changes. One or two lines per entry.
 
 ## Unreleased
 
+## 0.2.1 — 2026-07-19
+
+Layout fix for auto-spawned docked ops. Creating a GLSL TOP auto-spawns docked companion DATs — `<name>_pixel` (the fragment shader), `<name>_info`, `<name>_compute` — beneath it. TD only carries docked ops along when you drag the host in the UI; every placement tool here sets `nodeX`/`nodeY` from Python, which moves the host alone and strands the companions at their spawn coordinates with a long dock-tether line across the network.
+
+- **`move_operator` and `build_network` re-fan docked ops after placing a host.** A new shared `_fan_docked` helper snaps a host's docked companions into a clean row directly beneath it (`_pixel`/`_vertex` shader closest, so it sits right under the TOP), matching the native spawn layout. Repositioning a GLSL TOP now carries its shader DATs along instead of leaving them behind.
+- **`tidy_docked` tool** — repair pass for networks already sprawled. Pass a single op, or a COMP with `recursive=True` to sweep every host inside (including nested COMPs). Returns `{tidied, companions}`.
+- **`glsl_top_vec4_uniform` template no longer leaves an orphan DAT.** It wrote the starter shader into a freshly-created `_shader` Text DAT while `.create(glslTOP)` *also* auto-spawned an unused `_pixel` DAT. Now it writes into the auto-spawned pixel DAT (`pixeldat.eval()`) and fans the companions, so nothing is left dangling.
+
 ## 0.2.0 — 2026-07-19
 
 Context-and-round-trip reduction pass (branch `perf/reduce-mcp-context-and-roundtrips`). The bridge is frame-locked (~17ms/call); the real cost was many sequential tool calls and large results bloating context. This release attacks both, plus fixes three latent serialization bugs.
