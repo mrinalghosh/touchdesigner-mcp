@@ -21,6 +21,7 @@ Timeout:
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -73,7 +74,43 @@ if DEFAULT_INSTANCE not in INSTANCES:
     )
 TD_TIMEOUT = float(os.environ.get("TD_TIMEOUT", "10.0"))
 
-mcp = FastMCP("touchdesigner")
+
+# Sent to every client at connection time (MCP `instructions`), so this travels
+# with the server to any project/directory — unlike a repo CLAUDE.md or a local
+# skill. Kept deliberately tight: it lives in context for the whole session, so
+# bloating it would be self-defeating.
+_INSTRUCTIONS = """\
+Drive a running TouchDesigner instance from its Web Server DAT. Every tool call
+is a full model turn plus ~one TD frame of latency, and large results stay in
+context and slow every later turn — so be economical.
+
+EFFICIENCY
+- Batch. To build or modify more than ~2 ops, use build_network (declarative
+  ops + connections + params) or a single exec_python that assigns _result —
+  not a stream of create_operator / connect_operators / set_parameter calls.
+  create_from_template covers common wired recipes.
+- Introspect sparingly, cheapest-first. For an op's params use list_parameters
+  on the actual op. For the Python API, climb the ladder: get_module_help with
+  grep='x' to find a member (~hundreds of tok), then member='x' to read one
+  (~150 tok); get_td_class_details for a structured whole-class summary (~3k);
+  bare get_module_help is the ~10k-token full dump — last resort. Filter
+  get_td_classes with name_contains. TD's API is stable within a session —
+  don't re-introspect the same class/op.
+- Verify with get_errors or the `errors` field build_network returns, not
+  screenshot_op, unless you genuinely need to see pixels.
+
+TD GOTCHAS (each fails silently if ignored)
+- Parameter names are the LOWERCASE internal names from list_parameters
+  (e.g. 'brightness1', 'translatex'), NOT the TitleCase tooltip label.
+- After a source CHOP (mouseIn, audioIn, midiIn, oscIn, ...), insert a Null
+  CHOP and reference the Null — sources rename/prefix channels unpredictably.
+- GLSL TOP runtime uniforms belong on the Vectors page (declare a vec4, set
+  vec0name), not the Constants page (compile-time only, assigns nothing).
+- TD's Python has numpy but not Pillow; screenshot_op already encodes PNG —
+  don't reach for PIL.
+"""
+
+mcp = FastMCP("touchdesigner", instructions=_INSTRUCTIONS)
 
 
 def _resolve(instance: str | None) -> tuple[str, str]:
@@ -133,7 +170,28 @@ async def _td_call(code: str, mode: str = "exec", instance: str | None = None) -
 
 
 def _lit(value: Any) -> str:
-    """Render a Python literal for safe embedding in generated TD code."""
+    """Render a Python literal for safe embedding in generated TD code.
+
+    repr() is almost right, but repr(float('inf')) == 'inf' and
+    repr(float('nan')) == 'nan' are bare names — a NameError when the generated
+    code is exec'd inside TD. Rewrite any non-finite float to a float('...')
+    call, recursing through dict/list/tuple so a *nested* non-finite (e.g. a
+    build_network param value) is rewritten too. Everything else — str, int,
+    bool, None, finite float — falls through to repr, whose output is unchanged.
+    """
+    if isinstance(value, bool):
+        return repr(value)  # bool is an int subclass; keep True/False, not 1/0
+    if isinstance(value, float) and not math.isfinite(value):
+        return "float({!r})".format(str(value))  # 'inf' / '-inf' / 'nan'
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            "{}: {}".format(_lit(k), _lit(v)) for k, v in value.items()
+        ) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_lit(x) for x in value) + "]"
+    if isinstance(value, tuple):
+        inner = ", ".join(_lit(x) for x in value)
+        return "(" + inner + ("," if len(value) == 1 else "") + ")"
     return repr(value)
 
 
@@ -552,24 +610,65 @@ async def get_td_class_details(
 
 @mcp.tool()
 async def get_module_help(
-    name: str, instance: str | None = None
-) -> str:
-    """Return the `help()` output for a TD Python name.
+    name: str,
+    member: str | None = None,
+    grep: str | None = None,
+    instance: str | None = None,
+) -> str | dict:
+    """Look up TD Python API docs. Prefer the scalpel modes — the full dump is ~10k tokens.
 
-    `name` can be a bare identifier on the `td` module ('TOP', 'Par') or a
-    dotted path resolvable in TD's namespace ('TOP.cook', 'op').
+    `name` is a bare identifier on the `td` module ('TOP', 'Par') or a dotted
+    path resolvable in TD's namespace ('op', 'project'). Climb cheapest-first:
+
+    - grep='pattern'  — SEARCH: members of `name` whose name or docstring match
+      (case-insensitive). Returns [{name, signature, doc}] rows, ~hundreds of
+      tokens. Use when you don't know the exact member. (grep like the shell.)
+    - member='cook'   — ZOOM: help() for just that one member, ~150 tokens.
+      Use when you know which method/attr you want.
+    - neither         — FULL help() text for the whole object, ~10k tokens for a
+      big class. Last resort. Consider get_td_class_details for a structured,
+      3x-smaller summary of the whole surface instead.
+
+    `grep` wins if both are given.
     """
     code = (
-        f"import io, contextlib\n"
+        f"import io, contextlib, inspect\n"
         f"_name = {_lit(name)}\n"
+        f"_member = {_lit(member)}\n"
+        f"_grep = {_lit(grep)}\n"
         f"_obj = getattr(td, _name, None)\n"
         f"if _obj is None:\n"
         f"  try: _obj = eval(_name, {{'td': td, 'op': op, 'project': project, 'app': app, 'ui': ui}})\n"
         f"  except Exception: _obj = _name\n"
-        f"_buf = io.StringIO()\n"
-        f"with contextlib.redirect_stdout(_buf):\n"
-        f"  help(_obj)\n"
-        f"_result = _buf.getvalue()"
+        f"if _grep is not None:\n"
+        f"  _q = _grep.lower()\n"
+        f"  _rows = []\n"
+        f"  for _n in sorted(dir(_obj)):\n"
+        f"    if _n.startswith('_'): continue\n"
+        f"    try: _v = getattr(_obj, _n)\n"
+        f"    except Exception: continue\n"
+        f"    _doc = getattr(_v, '__doc__', '') or ''\n"
+        f"    if _q in _n.lower() or _q in _doc.lower():\n"
+        f"      if callable(_v):\n"
+        f"        try: _sig = str(inspect.signature(_v))\n"
+        f"        except (TypeError, ValueError): _sig = '(...)'\n"
+        f"      else: _sig = None\n"
+        f"      _first = next((_l.strip() for _l in _doc.splitlines() if _l.strip()), None)\n"
+        f"      _rows.append({{'name': _n, 'signature': _sig, 'doc': _first[:100] if _first else None}})\n"
+        f"  _result = {{'name': _name, 'grep': _grep, 'matches': _rows}}\n"
+        f"elif _member is not None:\n"
+        f"  _target = getattr(_obj, _member, None)\n"
+        f"  if _target is None:\n"
+        f"    raise ValueError('No member ' + repr(_member) + ' on ' + _name)\n"
+        f"  _buf = io.StringIO()\n"
+        f"  with contextlib.redirect_stdout(_buf):\n"
+        f"    help(_target)\n"
+        f"  _result = _buf.getvalue()\n"
+        f"else:\n"
+        f"  _buf = io.StringIO()\n"
+        f"  with contextlib.redirect_stdout(_buf):\n"
+        f"    help(_obj)\n"
+        f"  _result = _buf.getvalue()"
     )
     return await _td_call(code, instance=instance)
 
@@ -832,6 +931,78 @@ async def create_from_template(
     return await _td_call(code, instance=instance)
 
 
+@mcp.tool()
+async def build_network(
+    parent_path: str,
+    operators: list[dict],
+    connections: list[dict] | None = None,
+    instance: str | None = None,
+) -> dict:
+    """Create, wire, parameterize, and lay out many operators in ONE call.
+
+    Collapses what would otherwise be dozens of create_operator /
+    connect_operators / set_parameter / move_operator round-trips into a single
+    main-thread exec. Every MCP round-trip costs ~one TD frame *plus* a full
+    model turn, so prefer this (or create_from_template) whenever you're
+    building more than two or three ops at once.
+
+    Args:
+        parent_path: COMP to build in, e.g. '/project1'.
+        operators: list of dicts, each:
+            {'name': str,              # unique within the parent
+             'type': str,              # TD class, e.g. 'noiseTOP', 'transformTOP'
+             'params': {name: value},  # optional; LOWERCASE internal names as
+                                        #   returned by list_parameters (e.g.
+                                        #   'brightness1', NOT 'Brightness1')
+             'x': float, 'y': float}    # optional tile position
+        connections: list of dicts, each:
+            {'from': str,   # op name in THIS batch, or a full path
+             'to': str,     # op name in THIS batch, or a full path
+             'out': int,    # source output index (default 0)
+             'in': int}     # target input index (default 0)
+
+    Ops are created first (so connections can reference them by name), then
+    params are set, then wiring. Failures are collected per-item instead of
+    aborting the whole batch. Returns
+    {'created': [paths], 'connected': [...], 'errors': [...]} — always check
+    `errors`.
+    """
+    code = (
+        f"_parent = op({_lit(parent_path)})\n"
+        f"if _parent is None: raise ValueError('No parent COMP at ' + {_lit(parent_path)})\n"
+        f"_ops_spec = {_lit(operators)}\n"
+        f"_conns_spec = {_lit(connections or [])}\n"
+        "_made, _created, _errors = {}, [], []\n"
+        "for _s in _ops_spec:\n"
+        "  try:\n"
+        "    _nm, _ty = _s['name'], _s['type']\n"
+        "    _cls = getattr(td, _ty, None)\n"
+        "    if not isinstance(_cls, type): raise ValueError('unknown op type ' + str(_ty))\n"
+        "    _o = _parent.create(_cls, _nm)\n"
+        "    _made[_nm] = _o; _created.append(_o.path)\n"
+        "    for _pk, _pv in (_s.get('params') or {}).items():\n"
+        "      try: getattr(_o.par, _pk).val = _pv\n"
+        "      except Exception as _pe: _errors.append('param ' + _nm + '.' + str(_pk) + ': ' + str(_pe))\n"
+        "    if 'x' in _s: _o.nodeX = float(_s['x'])\n"
+        "    if 'y' in _s: _o.nodeY = float(_s['y'])\n"
+        "  except Exception as _e:\n"
+        "    _errors.append('create ' + str(_s.get('name')) + ': ' + str(_e))\n"
+        "def _resolve(_r):\n"
+        "  return _made[_r] if _r in _made else op(_r)\n"
+        "_connected = []\n"
+        "for _c in _conns_spec:\n"
+        "  try:\n"
+        "    _src, _dst = _resolve(_c['from']), _resolve(_c['to'])\n"
+        "    if _src is None or _dst is None: raise ValueError('unresolved endpoint')\n"
+        "    _src.outputConnectors[int(_c.get('out', 0))].connect(_dst.inputConnectors[int(_c.get('in', 0))])\n"
+        "    _connected.append(_src.path + ' -> ' + _dst.path)\n"
+        "  except Exception as _e:\n"
+        "    _errors.append('connect ' + str(_c.get('from')) + '->' + str(_c.get('to')) + ': ' + str(_e))\n"
+        "_result = {'created': _created, 'connected': _connected, 'errors': _errors}"
+    )
+    return await _td_call(code, instance=instance)
+
+
 # ─── visual capture ──────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -888,7 +1059,11 @@ async def screenshot_op(
         "_idat = zlib.compress(_raw, 6)\n"
         "_png = b'\\x89PNG\\r\\n\\x1a\\n' + _chunk(b'IHDR', _ihdr) + _chunk(b'IDAT', _idat) + _chunk(b'IEND', b'')\n"
         "_result = {'b64': base64.b64encode(_png).decode('ascii'), "
-        "'format': 'png', 'width': _w, 'height': _h}"
+        "'format': 'png', 'width': _w, 'height': _h}\n"
+        # The base64 PNG is an intentional large payload — opt out of the bridge
+        # size cap, which would truncate it and corrupt the image (see
+        # webserver_callbacks._jsonable). A 512px screenshot is ~240KB of base64.
+        "_no_clip = True"
     )
     payload = await _td_call(code, instance=instance)
     return Image(data=base64.b64decode(payload["b64"]), format=payload["format"])

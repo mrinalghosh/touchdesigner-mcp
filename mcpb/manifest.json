@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "touchdesigner-mcp",
   "display_name": "TouchDesigner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Drive a running TouchDesigner instance from Claude: create operators, wire them, set parameters, run Python.",
   "long_description": "Bridges Claude to TouchDesigner via a Web Server DAT inside your .toe. Every tool call turns into a main-thread exec/eval in TD. Requires the mcp_webserver Web Server DAT (port 9980 by default) set up inside your project — see the project README for the TD-side component.",
   "author": {
