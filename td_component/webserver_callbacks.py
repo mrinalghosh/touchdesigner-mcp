@@ -81,6 +81,19 @@ def _jsonable(v, _depth=0, _clip=True):
         if _clip and len(items) > _MAX_ITEMS:
             out.append("...[+{} items truncated]".format(len(items) - _MAX_ITEMS))
         return out
+    # numpy scalars/arrays (TD ships numpy): np.int64 / np.float32 / np.bool_ are
+    # NOT Python int/float/bool, so without this they'd hit the str(v) fallback
+    # below and serialize as an opaque '5' instead of the number 5 — a silent
+    # type corruption for the very common case of returning a channel value or a
+    # numpyArray() element. tolist() maps a scalar -> Python scalar and an
+    # ndarray -> nested list; recursing keeps the depth/count caps in force.
+    # (np.float64 already passes as a Python float subclass and never reaches here.)
+    _tolist = getattr(v, "tolist", None)
+    if callable(_tolist) and hasattr(v, "dtype"):
+        try:
+            return _jsonable(_tolist(), _depth, _clip)
+        except Exception:
+            pass
     path = getattr(v, "path", None)
     if isinstance(path, str):
         return {
