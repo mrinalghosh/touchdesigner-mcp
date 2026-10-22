@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Build dist/touchdesigner-mcp.mcpb — a Claude Desktop MCP Bundle.
 #
-# Bundles the server package + vendored deps (mcp, httpx, transitive) next to
-# mcpb/manifest.json, then zips it. Double-clicking the resulting .mcpb in
-# Claude Desktop installs the server with a user-config form for TD_HOST etc.
+# Uses the MCPB `uv` server type: the bundle ships pyproject.toml + uv.lock
+# instead of vendored deps, and Claude Desktop runs `uv sync` at install time
+# against a Python it picks. Vendoring (the old `python` type) baked in
+# compiled wheels — pydantic_core's .so — for whatever python3 ran this
+# script, so the extension crashed on import whenever Desktop's python3 was a
+# different minor version.
 #
-# Requires: python3.10+, pip, zip. Run from repo root.
+# Requires: uv, zip. Run from repo root.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,21 +17,17 @@ cd "$repo_root"
 build_dir="build/mcpb"
 out="dist/touchdesigner-mcp.mcpb"
 
+# Ship a lockfile that matches pyproject.toml, so every install resolves the
+# same dependency versions.
+uv lock --check
+
 rm -rf "$build_dir" "$out"
-mkdir -p "$build_dir/server" "dist"
+mkdir -p "$build_dir" "dist"
 
-# Vendor runtime deps into server/lib first so we can drop the package on top
-# and end up with a single PYTHONPATH entry.
-python3 -m pip install \
-  --target "$build_dir/server/lib" \
-  --no-compile \
-  --quiet \
-  "mcp>=1.2.0" \
-  "httpx>=0.27"
-
-# Bundle the server package into the same lib dir
-cp -R touchdesigner_mcp "$build_dir/server/lib/touchdesigner_mcp"
-find "$build_dir/server/lib/touchdesigner_mcp" -type d -name __pycache__ -exec rm -rf {} +
+# Project files uv needs to sync + install the package
+cp pyproject.toml uv.lock "$build_dir/"
+cp -R touchdesigner_mcp "$build_dir/touchdesigner_mcp"
+find "$build_dir/touchdesigner_mcp" -type d -name __pycache__ -exec rm -rf {} +
 
 # Manifest + metadata
 cp mcpb/manifest.json "$build_dir/manifest.json"

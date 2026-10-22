@@ -17,7 +17,8 @@ Per-instance override for path:
     TD_INSTANCES="main=127.0.0.1:9980/mcp,dev=127.0.0.1:9981/mcp-dev"
 
 Timeout:
-    TD_TIMEOUT=10.0
+    TD_TIMEOUT=10.0          # whole request, incl. TD's main thread answering
+    TD_CONNECT_TIMEOUT=2.0   # just reaching the Web Server DAT
 """
 from __future__ import annotations
 
@@ -36,11 +37,13 @@ def _parse_instances() -> dict[str, tuple[str, int, str]]:
     """Return {name: (host, port, path)} from TD_INSTANCES, or a single 'default'."""
     raw = os.environ.get("TD_INSTANCES", "").strip()
     if not raw:
+        # `or` rather than a get() default: the .mcpb form passes a blanked
+        # field as "", and int("") would kill the server before the handshake.
         return {
             "default": (
-                os.environ.get("TD_HOST", "127.0.0.1"),
-                int(os.environ.get("TD_PORT", "9980")),
-                os.environ.get("TD_PATH", "/mcp"),
+                os.environ.get("TD_HOST") or "127.0.0.1",
+                int(os.environ.get("TD_PORT") or "9980"),
+                os.environ.get("TD_PATH") or "/mcp",
             )
         }
     out: dict[str, tuple[str, int, str]] = {}
@@ -72,7 +75,11 @@ if DEFAULT_INSTANCE not in INSTANCES:
         f"TD_DEFAULT_INSTANCE={DEFAULT_INSTANCE!r} not in configured instances "
         f"{sorted(INSTANCES)}"
     )
-TD_TIMEOUT = float(os.environ.get("TD_TIMEOUT", "10.0"))
+TD_TIMEOUT = float(os.environ.get("TD_TIMEOUT") or "10.0")
+# Connecting is separate from TD answering: a closed local port refuses
+# instantly, but an offline LAN host would otherwise eat the full TD_TIMEOUT
+# before saying "unreachable".
+TD_CONNECT_TIMEOUT = float(os.environ.get("TD_CONNECT_TIMEOUT") or "2.0")
 
 
 # Sent to every client at connection time (MCP `instructions`), so this travels
@@ -83,6 +90,11 @@ _INSTRUCTIONS = """\
 Drive a running TouchDesigner instance from its Web Server DAT. Every tool call
 is a full model turn plus ~one TD frame of latency, and large results stay in
 context and slow every later turn — so be economical.
+
+If a call fails with "cannot reach TouchDesigner", TD is closed or the bridge
+.tox isn't in the project. Stop and ask the user to open TD (and drop in
+touchdesigner_mcp.tox if needed) — don't retry or switch tools; every tool
+goes through the same bridge.
 
 EFFICIENCY
 - Batch. To build or modify more than ~2 ops, use build_network (declarative
@@ -140,11 +152,14 @@ async def _td_call(code: str, mode: str = "exec", instance: str | None = None) -
     """
     name, url = _resolve(instance)
     try:
-        async with httpx.AsyncClient(timeout=TD_TIMEOUT) as client:
+        timeout = httpx.Timeout(TD_TIMEOUT, connect=TD_CONNECT_TIMEOUT)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(url, json={"code": code, "mode": mode})
-    except httpx.ConnectError as e:
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        # ConnectTimeout stringifies to "", which would leave a dangling ": ."
+        detail = str(e) or f"no answer within {TD_CONNECT_TIMEOUT}s"
         raise RuntimeError(
-            f"[{name}] cannot reach TouchDesigner at {url}: {e}. "
+            f"[{name}] cannot reach TouchDesigner at {url}: {detail}. "
             f"Check that TD is open, the Web Server DAT exists and is Active, "
             f"and that its Port matches (default 9980)."
         ) from None
