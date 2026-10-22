@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 from typing import Any
 
 import base64
@@ -42,7 +43,7 @@ def _parse_instances() -> dict[str, tuple[str, int, str]]:
         return {
             "default": (
                 os.environ.get("TD_HOST") or "127.0.0.1",
-                int(os.environ.get("TD_PORT") or "9980"),
+                _env_num("TD_PORT", "9980", int),
                 os.environ.get("TD_PATH") or "/mcp",
             )
         }
@@ -62,24 +63,61 @@ def _parse_instances() -> dict[str, tuple[str, int, str]]:
         if ":" not in hostport:
             raise ValueError(f"TD_INSTANCES entry {name!r} missing port: {endpoint!r}")
         host, port_s = hostport.rsplit(":", 1)
+        if not port_s.isdigit():
+            raise ValueError(f"TD_INSTANCES entry {name!r} has a non-numeric port: {port_s!r}")
         out[name] = (host, int(port_s), path)
     if not out:
         raise ValueError("TD_INSTANCES parsed to empty mapping")
     return out
 
 
-INSTANCES = _parse_instances()
-DEFAULT_INSTANCE = os.environ.get("TD_DEFAULT_INSTANCE") or next(iter(INSTANCES))
-if DEFAULT_INSTANCE not in INSTANCES:
-    raise ValueError(
-        f"TD_DEFAULT_INSTANCE={DEFAULT_INSTANCE!r} not in configured instances "
-        f"{sorted(INSTANCES)}"
+def _env_num(name: str, default: str, cast: type) -> Any:
+    """Read a positive number from env. A blank value means the default — the
+    .mcpb form passes a cleared field as ""."""
+    raw = os.environ.get(name) or default
+    try:
+        value = cast(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a number") from None
+    if value <= 0:
+        raise ValueError(f"{name}={raw!r} must be greater than 0")
+    return value
+
+
+def _load_config() -> tuple[dict[str, tuple[str, int, str]], str, float, float]:
+    instances = _parse_instances()
+    default = os.environ.get("TD_DEFAULT_INSTANCE") or next(iter(instances))
+    if default not in instances:
+        raise ValueError(
+            f"TD_DEFAULT_INSTANCE={default!r} not in configured instances "
+            f"{sorted(instances)}"
+        )
+    timeout = _env_num("TD_TIMEOUT", "10.0", float)
+    # Connecting is separate from TD answering: a closed local port refuses
+    # instantly, but an offline LAN host would otherwise eat the full
+    # TD_TIMEOUT before saying "unreachable". Never longer than TD_TIMEOUT.
+    connect_timeout = min(_env_num("TD_CONNECT_TIMEOUT", "2.0", float), timeout)
+    return instances, default, timeout, connect_timeout
+
+
+# A bad value must not kill the process: Claude Desktop would only show
+# "Server disconnected", with the reason buried in its log. Start anyway and
+# report the problem from every tool call instead.
+CONFIG_ERROR: str | None = None
+try:
+    INSTANCES, DEFAULT_INSTANCE, TD_TIMEOUT, TD_CONNECT_TIMEOUT = _load_config()
+except ValueError as e:
+    INSTANCES, DEFAULT_INSTANCE, TD_TIMEOUT, TD_CONNECT_TIMEOUT = {}, "", 10.0, 2.0
+    CONFIG_ERROR = (
+        f"TouchDesigner MCP is misconfigured: {e}. Fix it in the extension's "
+        f"settings (or the server's env vars) and restart the client."
     )
-TD_TIMEOUT = float(os.environ.get("TD_TIMEOUT") or "10.0")
-# Connecting is separate from TD answering: a closed local port refuses
-# instantly, but an offline LAN host would otherwise eat the full TD_TIMEOUT
-# before saying "unreachable".
-TD_CONNECT_TIMEOUT = float(os.environ.get("TD_CONNECT_TIMEOUT") or "2.0")
+    print(CONFIG_ERROR, file=sys.stderr)
+
+
+def _check_config() -> None:
+    if CONFIG_ERROR:
+        raise RuntimeError(CONFIG_ERROR)
 
 
 # Sent to every client at connection time (MCP `instructions`), so this travels
@@ -91,10 +129,10 @@ Drive a running TouchDesigner instance from its Web Server DAT. Every tool call
 is a full model turn plus ~one TD frame of latency, and large results stay in
 context and slow every later turn — so be economical.
 
-If a call fails with "cannot reach TouchDesigner", TD is closed or the bridge
-.tox isn't in the project. Stop and ask the user to open TD (and drop in
-touchdesigner_mcp.tox if needed) — don't retry or switch tools; every tool
-goes through the same bridge.
+If a call fails with "cannot reach TouchDesigner", that instance is closed or
+its project lacks the bridge .tox. Stop and ask the user to open TD (and drop
+in touchdesigner_mcp.tox if needed) — don't retry or switch tools; every tool
+for that instance goes through the same bridge.
 
 EFFICIENCY
 - Batch. To build or modify more than ~2 ops, use build_network (declarative
@@ -132,6 +170,7 @@ mcp = FastMCP("touchdesigner", instructions=_INSTRUCTIONS)
 
 def _resolve(instance: str | None) -> tuple[str, str]:
     """Return (instance_name, url) for a given name (None → default)."""
+    _check_config()
     name = instance or DEFAULT_INSTANCE
     if name not in INSTANCES:
         raise ValueError(
@@ -224,6 +263,7 @@ async def list_instances() -> dict:
     Use any other tool's `instance` parameter to target a specific one.
     Omit `instance` (or pass null) to hit the default.
     """
+    _check_config()
     return {
         "default": DEFAULT_INSTANCE,
         "instances": {
@@ -253,6 +293,7 @@ async def ping(instance: str | None = None) -> dict:
 @mcp.tool()
 async def ping_all() -> dict:
     """Ping every configured instance; returns {name: status}."""
+    _check_config()
     out: dict[str, Any] = {}
     for name in INSTANCES:
         try:

@@ -18,7 +18,7 @@ The MCP server is a thin stdio bridge. All TD mutation happens on TouchDesigner'
 
 ## Install via .mcpb (recommended)
 
-The `.mcpb` bundle is a single-file install for Claude Desktop. It ships `pyproject.toml` + `uv.lock` (MCPB `uv` server type) and the TD-side `.tox`, so both halves come from one file. Claude Desktop installs Python and the dependencies itself, so nothing needs to be on your PATH.
+The `.mcpb` bundle is a single-file install for Claude Desktop. It ships `pyproject.toml` + `uv.lock` (MCPB `uv` server type) and the TD-side `.tox`, so both halves come from one file. Claude Desktop installs the dependencies itself with uv, using a Python version the locked dependencies have prebuilt wheels for (downloading one if none is installed).
 
 1. Build the bundle from the repo root (needs `uv`):
    ```bash
@@ -133,7 +133,7 @@ See [claude_desktop_config.example.json](claude_desktop_config.example.json) for
 | `TD_INSTANCES`        | —            | Multi-instance map: `name=host:port[/path],...` (overrides the single-instance vars) |
 | `TD_DEFAULT_INSTANCE` | first in map | Which instance unqualified tool calls target                                         |
 | `TD_TIMEOUT`          | `10.0`       | HTTP timeout in seconds                                                              |
-| `TD_CONNECT_TIMEOUT`  | `2.0`        | Seconds to wait just to reach the Web Server DAT before reporting TD unreachable     |
+| `TD_CONNECT_TIMEOUT`  | `2.0`        | Seconds to wait just to reach the Web Server DAT (capped at `TD_TIMEOUT`)            |
 
 Per-instance path override: `TD_INSTANCES="main=127.0.0.1:9980/mcp,dev=127.0.0.1:9981/mcp-dev"`.
 

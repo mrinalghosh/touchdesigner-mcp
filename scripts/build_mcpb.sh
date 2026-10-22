@@ -26,6 +26,30 @@ mkdir -p "$build_dir" "dist"
 
 # Project files uv needs to sync + install the package
 cp pyproject.toml uv.lock "$build_dir/"
+
+# Cap the Python Desktop's `uv sync` may pick. Uncapped, uv takes the newest
+# it finds or can download, and a fresh release can predate the lock's wheels
+# (3.15 shipped 2026-10-09; the locked pydantic-core stops at cp314) — uv then
+# builds from source, which needs Rust and fails on most machines. The cap is
+# the newest minor that every compiled dep in uv.lock has wheels for, so it
+# rises on its own once a re-lock brings newer wheels. Bundle-only: a range in
+# the repo's .python-version would confuse pyenv.
+uv run --no-project --quiet --python '>=3.11' python - > "$build_dir/.python-version" <<'PY'
+import re, tomllib
+lock = tomllib.load(open("uv.lock", "rb"))
+cap = None
+for pkg in lock["package"]:
+    names = [w["url"].rsplit("/", 1)[1] for w in pkg.get("wheels", [])]
+    # abi3 and pure-Python wheels keep working on future versions
+    if not names or any("-abi3-" in n or "-none-any" in n for n in names):
+        continue
+    minors = [int(m) for n in names for m in re.findall(r"-cp3(\d+)-cp3\d+t?-", n)]
+    if minors:
+        cap = max(minors) if cap is None else min(cap, max(minors))
+floor = lock["requires-python"]
+print(f"{floor},<3.{cap + 1}" if cap is not None else floor)
+PY
+echo "bundle python: $(cat "$build_dir/.python-version")"
 cp -R touchdesigner_mcp "$build_dir/touchdesigner_mcp"
 find "$build_dir/touchdesigner_mcp" -type d -name __pycache__ -exec rm -rf {} +
 
