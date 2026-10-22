@@ -18,17 +18,19 @@ The MCP server is a thin stdio bridge. All TD mutation happens on TouchDesigner'
 
 ## Install via .mcpb (recommended)
 
-The `.mcpb` bundle is a single-file install for Claude Desktop. It vendors the Python deps and ships the TD-side `.tox` alongside, so both halves come from one file.
+The `.mcpb` bundle is a single-file install for Claude Desktop. It ships `pyproject.toml` + `uv.lock` (MCPB `uv` server type) and the TD-side `.tox`, so both halves come from one file. Claude Desktop installs the dependencies itself with uv, using a Python version the locked dependencies have prebuilt wheels for (downloading one if none is installed).
 
-1. Build the bundle from the repo root:
+1. Build the bundle from the repo root (needs `uv`):
    ```bash
    bash scripts/build_mcpb.sh
    # → built dist/touchdesigner-mcp.mcpb
    ```
-2. Double-click [dist/touchdesigner-mcp.mcpb](dist/touchdesigner-mcp.mcpb). Claude Desktop opens a config form — defaults are fine for local TD (`TD_HOST=127.0.0.1`, `TD_PORT=9980`, `TD_PATH=/mcp`). Leave the multi-instance fields blank unless you're targeting more than one TD process. Click Install.
+2. Double-click [dist/touchdesigner-mcp.mcpb](dist/touchdesigner-mcp.mcpb). Claude Desktop opens a config form — defaults are fine for local TD (`TD_HOST=127.0.0.1`, `TD_PORT=9980`, `TD_PATH=/mcp`). Leave the multi-instance fields blank unless you're targeting more than one TD process. Click Install. The first install takes a minute while Desktop fetches dependencies.
 3. Continue with the TouchDesigner-side setup below, then skip the "MCP client configuration" section (the bundle wires that for you).
 
-Requires `python3` on PATH (default on most macOS/Linux installs; install from python.org if missing).
+Install it **either** as the extension **or** through the "MCP client configuration" section below, not both. Two registrations put every tool in Claude's context twice.
+
+The server starts whether or not TouchDesigner is open. With TD closed, tools return `cannot reach TouchDesigner …` instead of failing to connect. If Claude Desktop says the server itself failed or disconnected, check `~/Library/Logs/Claude/mcp-server-touchdesigner.log` for the startup traceback.
 
 ## Install from source
 
@@ -131,6 +133,7 @@ See [claude_desktop_config.example.json](claude_desktop_config.example.json) for
 | `TD_INSTANCES`        | —            | Multi-instance map: `name=host:port[/path],...` (overrides the single-instance vars) |
 | `TD_DEFAULT_INSTANCE` | first in map | Which instance unqualified tool calls target                                         |
 | `TD_TIMEOUT`          | `10.0`       | HTTP timeout in seconds                                                              |
+| `TD_CONNECT_TIMEOUT`  | `2.0`        | Seconds to wait just to reach the Web Server DAT (capped at `TD_TIMEOUT`)            |
 
 Per-instance path override: `TD_INSTANCES="main=127.0.0.1:9980/mcp,dev=127.0.0.1:9981/mcp-dev"`.
 

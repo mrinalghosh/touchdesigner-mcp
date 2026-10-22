@@ -1,10 +1,10 @@
 {
-  "manifest_version": "0.3",
+  "manifest_version": "0.4",
   "name": "touchdesigner-mcp",
   "display_name": "TouchDesigner",
   "version": "0.2.1",
   "description": "Drive a running TouchDesigner instance from Claude: create operators, wire them, set parameters, run Python.",
-  "long_description": "Bridges Claude to TouchDesigner via a Web Server DAT inside your .toe. Every tool call turns into a main-thread exec/eval in TD. Requires the mcp_webserver Web Server DAT (port 9980 by default) set up inside your project — see the project README for the TD-side component.",
+  "long_description": "Bridges Claude to TouchDesigner via a Web Server DAT inside your .toe. Every tool call turns into a main-thread exec/eval in TD. Requires the mcp_webserver Web Server DAT (port 9980 by default) set up inside your project — see the project README for the TD-side component. The extension starts without TD running; tools report 'cannot reach TouchDesigner' until it is.",
   "author": {
     "name": "Mrinal Ghosh"
   },
@@ -15,13 +15,12 @@
   },
   "keywords": ["touchdesigner", "td", "mcp", "creative-coding", "visuals"],
   "server": {
-    "type": "python",
-    "entry_point": "server/lib/touchdesigner_mcp/server.py",
+    "type": "uv",
+    "entry_point": "touchdesigner_mcp/server.py",
     "mcp_config": {
-      "command": "python3",
-      "args": ["${__dirname}/server/lib/touchdesigner_mcp/server.py"],
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "--frozen", "touchdesigner-mcp"],
       "env": {
-        "PYTHONPATH": "${__dirname}/server/lib",
         "TD_HOST": "${user_config.td_host}",
         "TD_PORT": "${user_config.td_port}",
         "TD_PATH": "${user_config.td_path}",

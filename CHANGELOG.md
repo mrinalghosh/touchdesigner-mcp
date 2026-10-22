@@ -4,6 +4,13 @@ Reverse-chronological log of notable changes. One or two lines per entry.
 
 ## Unreleased
 
+- **`.mcpb` switched to the MCPB `uv` server type (manifest 0.4).** The old `python` type vendored deps with whatever `python3` ran `build_mcpb.sh`. That baked in `_pydantic_core.cpython-314-darwin.so`, so the extension crashed on import (`No module named 'pydantic_core._pydantic_core'`) under Desktop's 3.9/3.11 `python3`. The bundle now ships `pyproject.toml` + `uv.lock`, and Desktop runs `uv sync` against a Python it picks. It shrank from 12 MB to ~100 KB, and the build checks that the lockfile is up to date.
+- **Bundle caps the Python uv may pick.** The build writes a bundle-only `.python-version` range ending at the newest minor that every compiled dep in `uv.lock` has wheels for (currently `>=3.10,<3.15`). Otherwise uv would choose the just-released 3.15, find no cp315 wheels for the locked pydantic-core, and try to compile it from source with Rust.
+- **Bad config no longer kills the server.** A malformed value (`TD_PORT=99a0`, a bad `TD_INSTANCES` entry, an unknown `TD_DEFAULT_INSTANCE`) used to crash startup, so Desktop showed only "Server disconnected". The server now starts anyway and every tool returns an error naming the bad variable.
+- **Fail fast when TD is unreachable.** A separate `TD_CONNECT_TIMEOUT` (default 2s, never more than `TD_TIMEOUT`) means an offline instance on another machine reports "cannot reach TouchDesigner" in ~2s instead of waiting the full 10s `TD_TIMEOUT` and surfacing as a generic HTTP error.
+- **Blank `.mcpb` config fields no longer crash startup.** Desktop passes a cleared field as `""`, and `int("")` killed the server before the MCP handshake.
+- **Server `instructions` tell the model what to do when TD is unreachable:** stop and ask the user to open TD, rather than retrying or switching tools.
+
 ## 0.2.1 — 2026-07-19
 
 Layout fix for auto-spawned docked ops. Creating a GLSL TOP auto-spawns docked companion DATs — `<name>_pixel` (the fragment shader), `<name>_info`, `<name>_compute` — beneath it. TD only carries docked ops along when you drag the host in the UI; every placement tool here sets `nodeX`/`nodeY` from Python, which moves the host alone and strands the companions at their spawn coordinates with a long dock-tether line across the network.
